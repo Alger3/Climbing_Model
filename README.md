@@ -1,2 +1,2 @@
 # Climbing_Model
-Modelling Affordance Based on Physical Characteristics in Climbing
+This Repositories is for my research on climbing. And the data I used is based on [Climbing Hold](https://www.kaggle.com/datasets/tomasslama/indoor-climbing-gym-hold-segmentation/data?select=bh-annotation.csv) and simulated climbers.
