@@ -52,8 +52,12 @@ def is_route_feasible(climber,points):
 
     max_reach = reach * (1 + strength_bonus + flex_bonus) - weight_punish
 
+    # TODO: I dont know how to define the matric to label whether they can pass
     for i in range(len(points)-1):
         if dist(points[i],points[i+1]) > max_reach:
             return False
 
     return True
+
+# TODO: 1. Now the data i used is the whole climbing wall not the route. Should I use specific route?
+# TODO: 2. How to label the feasibility of climbers with different wall (Create different matrics like weight-strength, flexibility)
