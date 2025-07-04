@@ -33,31 +33,3 @@ def build_route_graph(route,threshold):
                 if dist <= threshold:
                     G.add_edge(i, j)
     return G
-
-
-# TODO: Need to complicated the algorithmn
-# assign the label to each athletes
-def is_route_feasible(climber,points):
-    height = climber["height"]
-    ape_index = climber["ape_index"]
-    weight = climber["weight"]
-    flexibility = climber["flexibility"]
-    strength = climber["strength"]
-
-    # Add condition to judge complete or not
-    reach = height * ape_index
-    flex_bonus = (flexibility/10)*0.15
-    strength_bonus = (strength/100)*0.2
-    weight_punish = weight*0.05
-
-    max_reach = reach * (1 + strength_bonus + flex_bonus) - weight_punish
-
-    # TODO: I dont know how to define the matric to label whether they can pass
-    for i in range(len(points)-1):
-        if dist(points[i],points[i+1]) > max_reach:
-            return False
-
-    return True
-
-# TODO: 1. Now the data i used is the whole climbing wall not the route. Should I use specific route?
-# TODO: 2. How to label the feasibility of climbers with different wall (Create different matrics like weight-strength, flexibility)
