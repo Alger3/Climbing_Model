@@ -1,6 +1,5 @@
 import json
 import networkx as nx
-from math import dist
 
 #Define a function to calculate the center of catch points
 def hold_centers(data):
@@ -33,3 +32,7 @@ def build_route_graph(route,threshold):
                 if dist <= threshold:
                     G.add_edge(i, j)
     return G
+
+# Sort climbing points
+def sort_climbing_points(route):
+    return sorted(route,key=lambda p:(p[1],p[0]))
