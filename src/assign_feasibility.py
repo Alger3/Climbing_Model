@@ -25,6 +25,7 @@ def is_route_feasible(climber,points):
 
 # TODO: the Climbing wall points are not in order, need to sort them first
 # TODO: Or need to only consider the closer point or try to follow the reachibility by Sophie
+# TODO: 1. Use random one to pixel and cm 2. Use GNN 3. Use 分类模型
 def simplest_feasible_arm_span(climber,points):
     height = climber["height"]
     ape_index = climber["ape_index"]
