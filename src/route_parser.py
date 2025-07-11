@@ -1,8 +1,17 @@
 import json
 import random
 import networkx as nx
+import numpy as np
 from math import dist
 import matplotlib.pyplot as plt
+
+# Suppose PIXEL TO CM
+PIXEL_TO_CM = 0.45
+
+def pixel_dist(p1,p2):
+    dx = (p1[0]-p2[0])*PIXEL_TO_CM
+    dy = (p1[1]-p2[1])*PIXEL_TO_CM
+    return np.sqrt(dx**2+dy**2)
 
 #Define a function to calculate the center of catch points
 def hold_centers(data):
