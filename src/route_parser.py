@@ -80,7 +80,11 @@ def plot_simulated_routes(sim_routes_df, routes_per_row=3):
         ys = [p[1] for p in points]
 
         axs[i].plot(xs, ys, marker='o', linestyle='-', color='royalblue')
-        axs[i].invert_yaxis()  # y坐标反转，使图从下往上
+
+        axs[i].scatter(xs[0],ys[0],color='green',s=100,zorder=5,label="Start")
+        axs[i].scatter(xs[-1],ys[-1],color='red',s=100,zorder=5,label="End")
+
+        axs[i].invert_yaxis()
         axs[i].set_title(f"Route: {route_id}")
         axs[i].set_xlabel("x (px)")
         axs[i].set_ylabel("y (px)")
