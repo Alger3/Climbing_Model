@@ -30,8 +30,41 @@ def build_graph_from_sample(entry):
 
     return data
 
+# This class is inherited from PyTorch-nn.Module
 class ClimbGNN(nn.Module):
+    # node_in: the node is 2-dimensionality (x,y)
+    # hidden: hidden layer
+    # global_feat_dim: climber characteristic dimension
     def __init__(self, node_in=2,hidden=32,global_feat_dim=5):
         super().__init__()
+        # Two graph convolutional layer
         self.conv1 = GCNConv(node_in,hidden)
         self.conv2 = GCNConv(hidden,hidden)
+
+        # Small MLP which can map the climber characteristic to 32 dimension
+        self.global_mlp = nn.Sequential(
+            nn.Linear(global_feat_dim,32),
+            nn.ReLU()
+        )
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden+32,64),
+            nn.ReLU(),
+            nn.Linear(64,2)
+        )
+
+    def forward(self,data):
+        # x: node, edge_index: the relation of edge (i,j)
+        x, edge_index = data.x, data.edge_index
+        x = F.relu(self.conv1(x, edge_index))
+        x = F.relu(self.conv2(x, edge_index))
+
+        # pooling over nodes
+        x = torch.mean(x, dim=0)
+
+        # Nonlinear mapping of the player's body feature vectors
+        g_feat = self.global_mlp(data.climber_features)
+
+        # combine the route vec with climber characteristic vec
+        out = torch.cat([x, g_feat], dim=0)
+        return self.classifier(out.unsqueeze(0))  # add batch dimension
