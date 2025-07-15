@@ -30,6 +30,24 @@ def build_graph_from_sample(entry):
 
     return data
 
+# This function is for inference (no feasibility), different structure
+def build_graph_for_inference(route,climber_info):
+    x = torch.tensor(route,dtype=torch.float)
+    edge_index = torch.tensor([[i,i+1] for i in range(len(route)-1)],dtype=torch.long).T
+
+    climber_vec = torch.tensor([
+        climber_info["height"],
+        climber_info["ape_index"],
+        climber_info["strength"],
+        climber_info["weight"],
+        climber_info["flexibility"]
+    ],dtype=torch.float)
+
+    data = Data(x=x,edge_index=edge_index)
+    data.climber_features = climber_vec
+
+    return data
+
 # This class is inherited from PyTorch-nn.Module
 class ClimbGNN(nn.Module):
     # node_in: the node is 2-dimensionality (x,y)
@@ -68,3 +86,14 @@ class ClimbGNN(nn.Module):
         # combine the route vec with climber characteristic vec
         out = torch.cat([x, g_feat], dim=0)
         return self.classifier(out.unsqueeze(0))  # add batch dimension
+
+def predict_feasibility(model, route, climber_info):
+    # route: [(x1,y1),(x2,y2),...]
+    # climber_info: (dict), height, weight, ape_index, strength, flexibility
+    # output: 0 or 1
+
+    data = build_graph_for_inference(route,climber_info)
+    model.eval()
+    out = model(data)
+
+    return torch.argmax(out).item()
