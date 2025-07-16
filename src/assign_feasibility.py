@@ -23,7 +23,3 @@ def is_route_feasible(climber,points):
             return False
 
     return True
-
-# TODO: the Climbing wall points are not in order, need to sort them first
-# TODO: Or need to only consider the closer point or try to follow the reachibility by Sophie
-# TODO: 1. Use random one to pixel and cm 2. Use GNN 3. Use 分类模型
