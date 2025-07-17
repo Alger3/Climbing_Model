@@ -98,6 +98,6 @@ def predict_feasibility(model, route, climber_info):
 
     return torch.argmax(out).item()
 
-# 使用不同的algorithm
+# 使用不同的algorithm去predict feasibility
 # 一只脚在某点，根据这个去计算手和脚的可达处
 # model：比如我输入route的全部points和climber当前的points（手脚）以及characteristic，然后model可以返回climber的可及点。（不断重复）
