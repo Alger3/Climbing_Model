@@ -2,6 +2,7 @@ import json
 import random
 import networkx as nx
 import numpy as np
+import math
 from math import dist
 import matplotlib.pyplot as plt
 
@@ -49,14 +50,14 @@ def build_wall_graph(wall,threshold):
 def sort_climbing_points(wall):
     return sorted(wall,key=lambda p:(p[1],p[0]))
 
-# Simulate a route from wall
-def simulate_route_from_wall(points,max_reach,num_holds):
+# Simulate a route from wall (pick from bottom to top)
+def simulate_route_from_wall(wall_points,max_reach,num_holds):
     route = []
     used = set()
 
-    # 只从底部 20% 高度的点中随机选起点
-    y_threshold = sorted([p[1] for p in points], reverse=True)[int(len(points) * 0.2)]
-    bottom_candidates = [p for p in points if p[1] >= y_threshold]
+    # Pick an random point which is lower than 20% height
+    y_threshold = sorted([p[1] for p in wall_points], reverse=True)[int(len(wall_points) * 0.2)]
+    bottom_candidates = [p for p in wall_points if p[1] >= y_threshold]
     if not bottom_candidates:
         return []
 
@@ -66,7 +67,7 @@ def simulate_route_from_wall(points,max_reach,num_holds):
 
     while len(route) < num_holds:
         candidates = [
-            p for p in points
+            p for p in wall_points
             if p not in used and dist(current, p) <= max_reach and p[1] < current[1]
         ]
         if not candidates:
@@ -75,6 +76,33 @@ def simulate_route_from_wall(points,max_reach,num_holds):
         route.append(next_point)
         used.add(next_point)
         current = next_point
+
+    return route
+
+# Simulate a route from wall (pick from each height range)
+def simulate_route_by_height(wall_points, num_each_area, span_pixel):
+    route = []
+    used = set()
+
+    # Sorted the points by height, descending
+    points_height = sorted([p[1] for p in wall_points], reverse=True)
+    # Sorted the points by width
+    points_width = sorted([p[0] for p in wall_points])
+    # Calculate how height is the wall
+    height = points_height[0] - points_height[-1]
+    # Calculate how wide is the wall
+    width = points_width[-1] - points_width[0]
+    # split them into different areas by height and width
+    height_layers = math.ceil(height/span_pixel)
+    width_layers = math.ceil(width/span_pixel)
+
+    height_areas = [i*span_pixel for i in range(1, height_layers+1)]
+    width_areas = [i*span_pixel for i in range(1, width_layers+1)]
+
+    areas = [(x,y) for x in width_areas for y in height_areas]
+
+    #TODO: Pick random points in each area
+
 
     return route
 
