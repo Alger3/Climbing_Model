@@ -1,8 +1,8 @@
 from math import dist
 from route_parser import pixel_dist
 
-# TODO: Need to complicated the algorithmn
-def is_route_feasible(climber,points):
+# Input is sorted route
+def is_route_feasible_1(climber,points):
     height = climber["height"]
     ape_index = climber["ape_index"]
     weight = climber["weight"]
@@ -17,9 +17,10 @@ def is_route_feasible(climber,points):
 
     max_reach = reach * (1 + strength_bonus + flex_bonus) - weight_penalty
 
-    # TODO: I dont know how to define the metric to label whether they can pass
     for i in range(len(points)-1):
         if pixel_dist(points[i],points[i+1]) > max_reach:
             return False
 
     return True
+
+# TODO: Need to complicated the algorithmn
