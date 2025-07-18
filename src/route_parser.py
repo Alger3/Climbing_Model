@@ -82,27 +82,34 @@ def simulate_route_from_wall(wall_points,max_reach,num_holds):
 # Simulate a route from wall (pick from each height range)
 def simulate_route_by_height(wall_points, num_each_area, span_pixel):
     route = []
-    used = set()
 
     # Sorted the points by height, descending
     points_height = sorted([p[1] for p in wall_points], reverse=True)
     # Sorted the points by width
-    points_width = sorted([p[0] for p in wall_points])
+    # points_width = sorted([p[0] for p in wall_points])
     # Calculate how height is the wall
     height = points_height[0] - points_height[-1]
     # Calculate how wide is the wall
-    width = points_width[-1] - points_width[0]
+    # width = points_width[-1] - points_width[0]
     # split them into different areas by height and width
     height_layers = math.ceil(height/span_pixel)
-    width_layers = math.ceil(width/span_pixel)
+    # width_layers = math.ceil(width/span_pixel)
 
     height_areas = [i*span_pixel for i in range(1, height_layers+1)]
-    width_areas = [i*span_pixel for i in range(1, width_layers+1)]
+    # width_areas = [i*span_pixel for i in range(1, width_layers+1)]
 
-    areas = [(x,y) for x in width_areas for y in height_areas]
+    # areas = [(x,y) for x in width_areas for y in height_areas]
+    areas = sorted([y for y in height_areas],reverse=True)
 
     #TODO: Pick random points in each area
+    for value in areas:
+        area_points = [p for p in wall_points if p[1] <= value and p[1] > value-500]
+        if len(area_points) >= num_each_area:
+            route.append(random.sample(area_points,num_each_area))
+        else:
+            route.append(random.sample(area_points,len(area_points)))
 
+    route = [item for l in route for item in l]
 
     return route
 
