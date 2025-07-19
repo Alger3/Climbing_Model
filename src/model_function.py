@@ -99,5 +99,27 @@ def predict_feasibility(model, route, climber_info):
     return torch.argmax(out).item()
 
 # 使用不同的algorithm去predict feasibility
+
+
 # 一只脚在某点，根据这个去计算手和脚的可达处
 # model：比如我输入route的全部points和climber当前的points（手脚）以及characteristic，然后model可以返回climber的可及点。（不断重复）
+
+# Calculate the reach range of hand and leg
+def get_reach_ranges(climber):
+    height = climber["height"]
+    ape_index = climber["ape_index"]
+    flexibility = climber["flexibility"]
+    leg_len_factor = climber["leg_len_factor"]
+
+    arm_reach = height * ape_index * 0.5 + flexibility * 3
+    leg_reach = height * leg_len_factor + flexibility * 2
+    
+    return arm_reach, leg_reach
+
+# Calculate which holds are reachable
+def get_reachable_points(current_hand, current_foot, climber, route):
+    hand_reach, foot_reach = get_reach_ranges(climber)
+    reachable_hand = []
+    reachable_foot = []
+
+    
