@@ -7,18 +7,21 @@ def simulator(group):
         ape_index = np.random.normal(1.00,0.03)
         strength = np.random.randint(60,80)
         flexibility = np.random.randint(4,6)
+        leg_len_factor = np.random.normal(0.5,0.05)
     elif group == "skilled":
         height = np.random.normal(170,5)
         weight = np.random.normal(69.9,10.24)
         ape_index = np.random.normal(1.02,0.02)
         strength = np.random.randint(75,95)
         flexibility = np.random.randint(6,8)
+        leg_len_factor = np.random.normal(0.51,0.06)
     elif group == "elite":
         height = np.random.normal(177,8)
         weight = np.random.normal(67.2,13.6)
         ape_index = np.random.normal(1.05,0.03)
         strength = np.random.randint(95,115)
         flexibility = np.random.randint(8,10)
+        leg_len_factor = np.random.normal(0.53,0.05)
     else:
         raise ValueError("Unknown group type! Please Use 'casual', 'skilled', or 'elite'.")
     
@@ -28,5 +31,6 @@ def simulator(group):
         "weight": round(weight,1),
         "ape_index": round(ape_index, 2),
         "strength": strength,
-        "flexibility": flexibility
+        "flexibility": flexibility,
+        "leg_len_factor": leg_len_factor
     }
