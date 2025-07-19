@@ -139,31 +139,3 @@ def plot_simulated_routes(sim_routes_df, routes_per_row=3):
 
     plt.tight_layout()
     plt.show()
-
-# TODO: Figure what is for
-def compute_subcomponents(route,climber_info):
-    dx_list, dy_list, switches = [], [], 0
-    prev_dx = None
-
-    for i in range(len(route) - 1):
-        x0, y0 = route[i]
-        x1, y1 = route[i+1]
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        dx_list.append(dx)
-        dy_list.append(dy)
-
-        if prev_dx is not None:
-            if (dx > 20 and prev_dx < 0) or (dx < -20 and prev_dx > 0):
-                switches += 1
-        prev_dx = x1 - x0
-
-    return {
-        "max_dx": max(dx_list),
-        "max_dy": max(dy_list),
-        "mean_dx": sum(dx_list)/len(dx_list),
-        "mean_dy": sum(dy_list)/len(dy_list),
-        "switches": switches,
-        "span_ratio": max(dx_list) / (climber_info["height"] * climber_info["ape_index"]),
-        "dy_ratio": max(dy_list) / climber_info["height"]
-    }
