@@ -1,5 +1,6 @@
 from torch_geometric.data import Data
 import torch
+from route_parser import pixel_dist
 from torch_geometric.nn import GCNConv
 import torch.nn.functional as F
 import torch.nn as nn
@@ -111,7 +112,7 @@ def get_reach_ranges(climber):
     flexibility = climber["flexibility"]
     leg_len_factor = climber["leg_len_factor"]
 
-    arm_reach = height * ape_index * 0.5 + flexibility * 3
+    arm_reach = height * ape_index + flexibility * 3
     leg_reach = height * leg_len_factor + flexibility * 2
     
     return arm_reach, leg_reach
@@ -121,5 +122,13 @@ def get_reachable_points(current_hand, current_foot, climber, route):
     hand_reach, foot_reach = get_reach_ranges(climber)
     reachable_hand = []
     reachable_foot = []
+
+    for p in route:
+        if any(pixel_dist(h,p) <= hand_reach for h in current_hand):
+            reachable_hand.append(p)
+        if any(pixel_dist(f,p) <= foot_reach for f in current_foot):
+            reachable_foot.append(p)
+    
+    return reachable_hand, reachable_foot
 
     
