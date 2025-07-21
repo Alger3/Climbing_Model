@@ -125,6 +125,9 @@ def plot_simulated_routes(sim_routes_df, routes_per_row=3):
 
         axs[i].plot(xs, ys, marker='o', linestyle='-', color='royalblue')
 
+        for idx, (x, y) in enumerate(zip(xs, ys)):
+            axs[i].text(x, y, str(idx), fontsize=10, color='black', ha='center', va='center', zorder=6)
+
         axs[i].scatter(xs[0],ys[0],color='green',s=100,zorder=5,label="Start")
         axs[i].scatter(xs[-1],ys[-1],color='red',s=100,zorder=5,label="End")
 
@@ -136,6 +139,51 @@ def plot_simulated_routes(sim_routes_df, routes_per_row=3):
 
     for j in range(i + 1, len(axs)):
         axs[j].axis('off')
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_reachability(route, hand_pos, foot_pos, reachable_hands, reachable_feet):
+    # h: hand, f: foot, rh: reachable hands, fh: reachable feet
+    set_rh = set(reachable_hands)
+    set_rf = set(reachable_feet)
+    set_both = set_rh & set_rf
+
+    # remove the overlapping points
+    set_rh = set_rh - set_both
+    set_rf = set_rf - set_both
+
+    x_all, y_all = zip(*route)
+    x_h, y_h = zip(*hand_pos)
+    x_f, y_f = zip(*foot_pos)
+    
+    x_rh, y_rh = zip(*reachable_hands) if reachable_hands else ([],[])
+    x_rf, y_rf = zip(*reachable_feet) if reachable_feet else ([],[])
+    x_bh, y_bh = zip(*set_both) if set_both else ([],[])
+
+    fig, axs = plt.subplots(1, 2, figsize=(16,10))
+
+    # Current Pos
+    axs[0].scatter(x_all, y_all, c='gray', label='All Holds')
+    axs[0].scatter(x_h, y_h, c='blue', label='Current Hands')
+    axs[0].scatter(x_f, y_f, c='black', label='Current Feet')
+    axs[0].invert_yaxis()
+    axs[0].set_title("Current State")
+    axs[0].set_xlabel("X")
+    axs[0].set_ylabel("Y")
+    axs[0].grid(True)
+    axs[0].legend()
+
+    # Reachable Points
+    axs[1].scatter(x_all, y_all, c='gray', label='All Holds')
+    axs[1].scatter(x_rh, y_rh, c='green', label='Reachable Hands')
+    axs[1].scatter(x_rf, y_rf, c='orange', label='Reachable Feet')
+    axs[1].scatter(x_bh, y_bh, c='red', label='Both Reachable')
+    axs[1].invert_yaxis()
+    axs[1].set_title("Reachable Points")
+    axs[1].set_xlabel("X")
+    axs[1].grid(True)
+    axs[1].legend()
 
     plt.tight_layout()
     plt.show()
