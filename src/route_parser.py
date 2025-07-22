@@ -7,7 +7,7 @@ from math import dist
 import matplotlib.pyplot as plt
 
 # Suppose PIXEL TO CM
-PIXEL_TO_CM = 0.45
+PIXEL_TO_CM = 0.4
 
 def pixel_dist(p1,p2):
     dx = (p1[0]-p2[0])*PIXEL_TO_CM
