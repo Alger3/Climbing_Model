@@ -1,7 +1,7 @@
 from torch_geometric.data import Data
 import torch
 import numpy as np
-from route_parser import pixel_dist
+from route_parser import pixel_dist_to_cm
 from torch_geometric.nn import GCNConv
 import torch.nn.functional as F
 import torch.nn as nn
