@@ -1,5 +1,5 @@
 from math import dist
-from route_parser import pixel_dist
+from route_parser import pixel_dist_to_cm
 
 # Input is sorted route, only consider arm span...
 def is_route_feasible_1(climber,points):
@@ -18,7 +18,7 @@ def is_route_feasible_1(climber,points):
     max_reach = reach * (1 + strength_bonus + flex_bonus) - weight_penalty
 
     for i in range(len(points)-1):
-        if pixel_dist(points[i],points[i+1]) > max_reach:
+        if pixel_dist_to_cm(points[i],points[i+1]) > max_reach:
             return False
 
     return True
