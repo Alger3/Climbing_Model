@@ -20,10 +20,6 @@ def build_graph_reachability(route, hand_points, foot_points, climber, labels):
             np.min(hand_dists),
             np.mean(foot_dists),
             np.min(foot_dists),
-            climber['height'],
-            climber['ape_index'],
-            climber['flexibility'],
-            climber['leg_len_factor']
         ]
         node_features.append(feature)
 
@@ -39,7 +35,7 @@ def build_graph_reachability(route, hand_points, foot_points, climber, labels):
     # KNN
     route_array = np.array(route)
 
-    nbrs = NearestNeighbors(n_neighbors=10, algorithm='auto').fit(route_array)
+    nbrs = NearestNeighbors(n_neighbors=min(10,len(route)), algorithm='auto').fit(route_array)
     _, indices = nbrs.kneighbors(route_array)
 
     edges = set()
@@ -50,24 +46,36 @@ def build_graph_reachability(route, hand_points, foot_points, climber, labels):
     
     edge_index = torch.tensor(list(edges), dtype=torch.long).T
 
-    return Data(x=x, edge_index=edge_index, y=y)
+    climber_feat = torch.tensor([
+        climber['height'],
+        climber['ape_index'],
+        climber['flexibility'],
+        climber['leg_len_factor']
+    ], dtype=torch.float).unsqueeze(0)
+
+    return Data(x=x, edge_index=edge_index, y=y, climber=climber_feat)
 
 class ReachabilityGNN(nn.Module):
-    def __init__(self, node_in=10, hidden=64, out=4):
+    def __init__(self, node_in=6, climber_in=4, hidden=64, out=4):
         super().__init__()
         self.conv1 = GCNConv(node_in, hidden)
         self.conv2 = GCNConv(hidden, hidden)
-        self.conv3 = GCNConv(hidden, hidden)
+        self.climber_embed = nn.Linear(climber_in, hidden)
         self.classifier = nn.Sequential(
-            nn.Linear(hidden, hidden // 2),
+            nn.Linear(hidden*2, hidden),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(hidden // 2, out)
+            nn.Linear(hidden, out)
         )
 
     def forward(self, data):
-        x, edge_index = data.x, data.edge_index
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        climber_vec = data.climber  # shape: [batch_size, 4]
+
         x = F.relu(self.conv1(x, edge_index))
         x = F.relu(self.conv2(x, edge_index))
-        x = F.relu(self.conv3(x, edge_index))
-        return self.classifier(x)
+
+        climber_embed = self.climber_embed(climber_vec)         # [B, 64]
+        climber_per_node = climber_embed[batch]                 # [N, 64]
+
+        x = torch.cat([x, climber_per_node], dim=1)             # [N, 128]
+        return self.classifier(x)                               # [N, 4]
