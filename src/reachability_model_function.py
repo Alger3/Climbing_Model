@@ -79,3 +79,16 @@ class ReachabilityGNN(nn.Module):
 
         x = torch.cat([x, climber_per_node], dim=1)             # [N, 128]
         return self.classifier(x)                               # [N, 4]
+    
+# Used in imbalanced data
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2.0, weight=None):
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.weight = weight
+
+    def forward(self, input, target):
+        ce_loss = F.cross_entropy(input, target, weight=self.weight, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal = ((1 - pt) ** self.gamma) * ce_loss
+        return focal.mean()
