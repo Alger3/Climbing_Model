@@ -4,6 +4,7 @@ from sklearn.neighbors import NearestNeighbors
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GATConv
 import numpy as np
 import torch
 
@@ -56,14 +57,16 @@ def build_graph_reachability(route, hand_points, foot_points, climber, labels):
     return Data(x=x, edge_index=edge_index, y=y, climber=climber_feat)
 
 class ReachabilityGNN(nn.Module):
-    def __init__(self, node_in=6, climber_in=4, hidden=64, out=4):
+    def __init__(self, node_in=6, climber_in=4, hidden=64, out=4, dropout=0.2):
         super().__init__()
-        self.conv1 = GCNConv(node_in, hidden)
-        self.conv2 = GCNConv(hidden, hidden)
+        self.dropout = dropout
+        self.conv1 = GATConv(node_in, hidden, heads=2, concat=False)
+        self.conv2 = GATConv(hidden, hidden, heads=2, concat=False)
         self.climber_embed = nn.Linear(climber_in, hidden)
         self.classifier = nn.Sequential(
             nn.Linear(hidden*2, hidden),
             nn.ReLU(),
+            nn.Dropout(p=self.dropout),
             nn.Linear(hidden, out)
         )
 
@@ -75,6 +78,9 @@ class ReachabilityGNN(nn.Module):
         x = F.relu(self.conv2(x, edge_index))
 
         climber_embed = self.climber_embed(climber_vec)         # [B, 64]
+        climber_embed = F.relu(climber_embed)
+        climber_embed = F.dropout(climber_embed, p=self.dropout, training=self.training)
+
         climber_per_node = climber_embed[batch]                 # [N, 64]
 
         x = torch.cat([x, climber_per_node], dim=1)             # [N, 128]
