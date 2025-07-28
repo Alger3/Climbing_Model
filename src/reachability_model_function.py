@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
 from torch_geometric.nn import GATConv
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 import torch
 
@@ -98,3 +100,46 @@ class FocalLoss(nn.Module):
         pt = torch.exp(-ce_loss)
         focal = ((1 - pt) ** self.gamma) * ce_loss
         return focal.mean()
+    
+def plot_graph_prediction(graph, model, title):
+    label_colors = {
+        0: 'gray',  # unreachable
+        1: 'blue',  # hand reachable
+        2: 'orange',# foot reachable
+        3: 'green'  # both reachable
+    }
+
+    label_names = {
+        0: 'unreachable',
+        1: 'hand',
+        2: 'foot',
+        3: 'both'
+    }
+
+    model.eval()
+    with torch.no_grad():
+        graph = graph.to(next(model.parameters()).device)
+        logits = model(graph)
+        preds = logits.argmax(dim=1).cpu().numpy()
+        coords = graph.x[:, :2].cpu().numpy()
+
+        fig, ax = plt.subplots(figsize=(8,6))
+
+        for i, (x,y) in enumerate(coords):
+            label = preds[i]
+            ax.scatter(x, y, color=label_colors[label], s=100, edgecolors='black')
+
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='w', label=label_names[i],
+                   markerfacecolor=label_colors[i], markersize=10, markeredgecolor='black')
+            for i in label_colors
+        ]
+        ax.legend(handles=legend_elements, title="Predicted Labels")
+
+        ax.set_title(title)
+        ax.set_xlabel("X (pixels)")
+        ax.set_ylabel("Y (pixels)")
+        ax.invert_yaxis()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
