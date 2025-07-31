@@ -4,6 +4,7 @@ import numpy as np
 from torch_geometric.data import Data
 from route_parser import PIXEL_TO_CM
 import matplotlib.pyplot as plt
+from math import sqrt
 
 # Calculate the reach range of hand and leg
 def get_reach_ranges(climber):
@@ -95,4 +96,67 @@ def plot_route_with_grab(route, hand_points, foot_points, center=None):
     plt.title("Grab Position (Pixel)")
     plt.show()
 
+"""
+Below functions are for the reachability model with features dataset
+"""
 
+def sample_hand_foot_points(route, climber, max_trials=50):
+    arm_reach, leg_reach = get_reach_ranges(climber)
+    max_reach = max(arm_reach, leg_reach)
+    radius = max_reach / 2
+
+    for _ in range(max_trials):
+        center = route[np.random.randint(len(route))]
+        center_xy = (center['center_x'], center['center_y'])
+        dists = np.array([pixel_dist_to_cm((r['center_x'], r['center_y']), center_xy) for r in route])
+        within_idxs = np.where(dists <= radius)[0]
+        if len(within_idxs) >= 4:
+            selected = np.random.choice(within_idxs, 4, replace=False)
+            points = [route[i] for i in selected]
+            sorted_points = sorted(points, key=lambda p: p['center_y'])
+            hands = [(p['center_x'], p['center_y']) for p in sorted_points[:2]]
+            feet = [(p['center_x'], p['center_y']) for p in sorted_points[2:]]
+            if max(y for x, y in hands) < min(y for x, y in feet):
+                return hands, feet
+    return None, None
+
+def get_reachability_label_with_shape(p, hands, feet, climber,
+                                      base_area=2000,
+                                      base_circ=0.5,
+                                      base_aspect=0.2):
+    """
+    p: point, hold
+    label: 0 - unreachable
+           1 - hands reachable
+           2 - feet reachable
+           3 - both reachable
+    """
+    hand_reach, foot_reach = get_reach_ranges(climber)
+
+    # get current point (what i input, not the climber caught points)
+    p_xy = (p['center_x'], p['center_y'])
+
+    # First Condition - distance
+    h_reach = any(pixel_dist_to_cm(p_xy, h) <= hand_reach for h in hands)
+    f_reach = any(pixel_dist_to_cm(p_xy, f) <= foot_reach for f in feet)
+
+    strength_norm = climber["strength"] / climber["weight"]
+
+    area_thresh = base_area*(1.0-0.6*strength_norm)
+    circ_thresh = max(0.3, base_circ*(1.0-0.3*strength_norm))
+    aspect_thresh = base_aspect
+
+    area = p.get('shape_area', 0)
+    circ = p.get('shape_circularity', 0)
+    asp = p.get('shape_aspect_ratio', 0)
+    shape_ok = (area >= area_thresh and circ >= circ_thresh and asp >= aspect_thresh)
+
+    if h_reach and f_reach and shape_ok:
+        return 3
+    elif f_reach and shape_ok:
+        return 2
+    elif h_reach and shape_ok:
+        return 1
+    else:
+        return 0
+    
