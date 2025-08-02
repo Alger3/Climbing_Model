@@ -56,7 +56,12 @@ def build_graph_reachability(route, hand_points, foot_points, climber, labels):
         climber['leg_len_factor']
     ], dtype=torch.float).unsqueeze(0)
 
-    return Data(x=x, edge_index=edge_index, y=y, climber=climber_feat)
+    graph = Data(x=x, edge_index=edge_index, y=y, climber=climber_feat)
+
+    graph.hands = torch.tensor(hand_points, dtype=torch.float)
+    graph.feet = torch.tensor(foot_points, dtype=torch.float)
+
+    return graph
 
 class ReachabilityGNN(nn.Module):
     def __init__(self, node_in=6, climber_in=4, hidden=64, out=4, dropout=0.2):
@@ -129,10 +134,24 @@ def plot_graph_prediction(graph, model, title):
             label = preds[i]
             ax.scatter(x, y, color=label_colors[label], s=100, edgecolors='black')
 
+        if hasattr(graph, 'hands'):
+            hands = graph.hands.cpu().numpy()
+            for hx, hy in hands:
+                ax.scatter(hx, hy, s=150, facecolors='none', edgecolors='red', linewidths=2, marker='s', label='hand start')
+        if hasattr(graph, 'feet'):
+            feet = graph.feet.cpu().numpy()
+            for fx, fy in feet:
+                ax.scatter(fx, fy, s=150, facecolors='none', edgecolors='purple', linewidths=2, marker='s', label='foot start')
+
         legend_elements = [
             Line2D([0], [0], marker='o', color='w', label=label_names[i],
                    markerfacecolor=label_colors[i], markersize=10, markeredgecolor='black')
             for i in label_colors
+        ] + [
+            Line2D([0], [0], marker='s', color='r', label='Hand Start',
+                   markerfacecolor='none', markeredgewidth=2, markersize=10),
+            Line2D([0], [0], marker='s', color='purple', label='Foot Start',
+                   markerfacecolor='none', markeredgewidth=2, markersize=10)
         ]
         ax.legend(handles=legend_elements, title="Predicted Labels")
 
