@@ -100,63 +100,62 @@ def plot_route_with_grab(route, hand_points, foot_points, center=None):
 Below functions are for the reachability model with features dataset
 """
 
-def sample_hand_foot_points(route, climber, max_trials=50):
-    arm_reach, leg_reach = get_reach_ranges(climber)
-    max_reach = max(arm_reach, leg_reach)
-    radius = max_reach / 2
+# Calculate whether climber can catch this hold
+def is_grabbable_by_climber(climber, hold_features, use_hand):
+    group_base = {
+        "elite":   {"area": 500, "circularity": 0.5, "margin": 0.8},
+        "skilled": {"area": 1300, "circularity": 0.6, "margin": 0.9},
+        "casual":  {"area": 2300, "circularity": 0.7, "margin": 1.0}
+    }
 
-    for _ in range(max_trials):
-        center = route[np.random.randint(len(route))]
-        center_xy = (center['center_x'], center['center_y'])
-        dists = np.array([pixel_dist_to_cm((r['center_x'], r['center_y']), center_xy) for r in route])
-        within_idxs = np.where(dists <= radius)[0]
-        if len(within_idxs) >= 4:
-            selected = np.random.choice(within_idxs, 4, replace=False)
-            points = [route[i] for i in selected]
-            sorted_points = sorted(points, key=lambda p: p['center_y'])
-            hands = [(p['center_x'], p['center_y']) for p in sorted_points[:2]]
-            feet = [(p['center_x'], p['center_y']) for p in sorted_points[2:]]
-            if max(y for x, y in hands) < min(y for x, y in feet):
-                return hands, feet
-    return None, None
+    group = climber.get("group")
+    base = group_base.get(group)
 
-def get_reachability_label_with_shape(p, hands, feet, climber,
-                                      base_area=2000,
-                                      base_circ=0.5,
-                                      base_aspect=0.2):
-    """
-    p: point, hold
-    label: 0 - unreachable
-           1 - hands reachable
-           2 - feet reachable
-           3 - both reachable
-    """
-    hand_reach, foot_reach = get_reach_ranges(climber)
+    strength = climber.get("strength")
+    weight = climber.get("weight")
 
-    # get current point (what i input, not the climber caught points)
-    p_xy = (p['center_x'], p['center_y'])
+    area_adj = -10 * strength + 5 * weight
+    circ_adj = -0.004 * strength + 0.001 * weight
 
-    # First Condition - distance
-    h_reach = any(pixel_dist_to_cm(p_xy, h) <= hand_reach for h in hands)
-    f_reach = any(pixel_dist_to_cm(p_xy, f) <= foot_reach for f in feet)
-
-    strength_norm = climber["strength"] / climber["weight"]
-
-    area_thresh = base_area*(1.0-0.6*strength_norm)
-    circ_thresh = max(0.3, base_circ*(1.0-0.3*strength_norm))
-    aspect_thresh = base_aspect
-
-    area = p.get('shape_area', 0)
-    circ = p.get('shape_circularity', 0)
-    asp = p.get('shape_aspect_ratio', 0)
-    shape_ok = (area >= area_thresh and circ >= circ_thresh and asp >= aspect_thresh)
-
-    if h_reach and f_reach and shape_ok:
-        return 3
-    elif f_reach and shape_ok:
-        return 2
-    elif h_reach and shape_ok:
-        return 1
+    if use_hand:
+        area_scale = 0.95  # 手对面积的要求较低
+        circ_scale = 0.95
     else:
-        return 0
+        area_scale = 1.2  # 脚需要更大的面积和更高的圆度
+        circ_scale = 1.1
+
+    raw_area_thresh = (base["area"] + area_adj) * area_scale
+    raw_circ_thresh = (base["circularity"] + circ_adj) * circ_scale
+
+    margin = base["margin"]
+    area_thresh = max(0, raw_area_thresh * margin)
+    circ_thresh = max(0, raw_circ_thresh * margin)
+
+    return (hold_features.get("shape_area") >= area_thresh) and (hold_features.get("shape_circularity") >= circ_thresh)
+
+def get_reachability_features_label(route, climber, hand_points, foot_points, holds_features):
+    hand_reach, foot_reach = get_reach_ranges(climber)
+    
+    labels = []
+    for i, p in enumerate(route):
+        hold_feat = holds_features[i]
+
+        hand = any(pixel_dist_to_cm(p, h) <= hand_reach for h in hand_points)
+        foot = any(pixel_dist_to_cm(p, f) <= foot_reach for f in foot_points)
+
+        hand_graspable = is_grabbable_by_climber(climber, hold_feat, use_hand=True)
+        foot_graspable = is_grabbable_by_climber(climber, hold_feat, use_hand=False)
+
+        hand_reach = hand and hand_graspable
+        foot_reach = foot and foot_graspable
+
+        if hand_reach and foot_reach:
+            labels.append(3)  # both hand and foot can reach
+        elif hand_reach:
+            labels.append(1)  # only hand can reach
+        elif foot_reach:
+            labels.append(2)  # only foot can reach
+        else:
+            labels.append(0)  # cant reach
+    return labels
     
