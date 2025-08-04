@@ -4,9 +4,13 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, BatchNorm
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from route_parser import pixel_dist_to_cm
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
+from torch_geometric.data import Data
 
 class ReachabilityFeaturesGNN(nn.Module):
-    def __init__(self, node_in=6, climber_in=6, hidden=64, out=4):
+    def __init__(self, node_in=10, climber_in=6, hidden=64, out=4):
         super().__init__()
         self.conv1 = GCNConv(node_in, hidden)
         self.norm1 = BatchNorm(hidden)
@@ -98,3 +102,63 @@ def plot_graph_prediction(graph, model, title):
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+
+def build_graph_reachability_features(route, hand_points, foot_points, climber, holds_features, labels):
+    node_features = []
+
+    for i, p in enumerate(route):
+        hold_feat = holds_features[i]
+
+        hand_dists = [pixel_dist_to_cm(p, h) for h in hand_points]
+        foot_dists = [pixel_dist_to_cm(p, f) for f in foot_points]
+
+        feature = list(p) + [  # x, y
+            np.mean(hand_dists),
+            np.min(hand_dists),
+            np.mean(foot_dists),
+            np.min(foot_dists),
+            hold_feat.get("shape_area", 0),
+            hold_feat.get("shape_perimeter", 0),
+            hold_feat.get("shape_aspect_ratio", 0),
+            hold_feat.get("shape_circularity", 0),
+        ]
+        node_features.append(feature)
+
+    x = torch.tensor(node_features, dtype=torch.float)
+    y = torch.tensor(labels, dtype=torch.long)
+
+    # 全连接图
+    # num_nodes = len(route)
+    # edge_index = torch.combinations(torch.arange(num_nodes), r=2).T
+    # # Let the edge become undirected edge
+    # edge_index = torch.cat([edge_index, edge_index[[1, 0]]], dim=1)
+
+    # KNN
+    route_array = np.array(route)
+
+    nbrs = NearestNeighbors(n_neighbors=min(10,len(route)), algorithm='auto').fit(route_array)
+    _, indices = nbrs.kneighbors(route_array)
+
+    edges = set()
+    for i, neighbors in enumerate(indices):
+        for j in neighbors:
+            if i != j:
+                edges.add(tuple(sorted((i, j))))
+    
+    edge_index = torch.tensor(list(edges), dtype=torch.long).T
+
+    climber_feat = torch.tensor([
+        climber['height'],
+        climber['ape_index'],
+        climber['flexibility'],
+        climber['leg_len_factor'],
+        climber["weight"],
+        climber["strength"]
+    ], dtype=torch.float).unsqueeze(0)
+
+    graph = Data(x=x, edge_index=edge_index, y=y, climber=climber_feat)
+
+    graph.hands = torch.tensor(hand_points, dtype=torch.float)
+    graph.feet = torch.tensor(foot_points, dtype=torch.float)
+
+    return graph
