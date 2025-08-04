@@ -103,6 +103,18 @@ def plot_graph_prediction(graph, model, title):
         plt.tight_layout()
         plt.show()
 
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2.0, weight=None):
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.weight = weight
+
+    def forward(self, input, target):
+        ce_loss = F.cross_entropy(input, target, weight=self.weight, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal = ((1 - pt) ** self.gamma) * ce_loss
+        return focal.mean()
+
 def build_graph_reachability_features(route, hand_points, foot_points, climber, holds_features, labels):
     node_features = []
 
