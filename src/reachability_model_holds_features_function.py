@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, BatchNorm
+from torch_geometric.nn import GCNConv, BatchNorm, GATConv
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from route_parser import pixel_dist_to_cm
@@ -10,11 +10,12 @@ from sklearn.neighbors import NearestNeighbors
 from torch_geometric.data import Data
 
 class ReachabilityFeaturesGNN(nn.Module):
-    def __init__(self, node_in=10, climber_in=6, hidden=64, out=4):
+    def __init__(self, node_in=10, climber_in=6, hidden=64, out=4, heads=4):
         super().__init__()
-        self.conv1 = GCNConv(node_in, hidden)
-        self.norm1 = BatchNorm(hidden)
-        self.conv2 = GCNConv(hidden, hidden)
+        self.conv1 = GATConv(node_in, hidden, heads=heads, concat=True)
+        self.norm1 = BatchNorm(hidden*heads)
+
+        self.conv2 = GATConv(hidden*heads, hidden, heads=1, concat=True)
         self.norm2 = BatchNorm(hidden)
 
         self.climber_embed = nn.Sequential(
