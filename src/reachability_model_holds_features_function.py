@@ -1,21 +1,22 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, BatchNorm, GATConv
+from torch_geometric.nn import GCNConv, BatchNorm, GATConv, GATv2Conv
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from route_parser import pixel_dist_to_cm
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 from torch_geometric.data import Data
+from route_parser import PIXEL_TO_CM
 
 class ReachabilityFeaturesGNN(nn.Module):
-    def __init__(self, node_in=10, climber_in=6, hidden=64, out=4, heads=4):
+    def __init__(self, node_in=10, climber_in=6, edge_in=4, hidden=64, out=4, heads=4):
         super().__init__()
-        self.conv1 = GATConv(node_in, hidden, heads=heads, concat=True)
+        self.conv1 = GATv2Conv(node_in, hidden, heads=heads, edge_dim=edge_in, concat=True)
         self.norm1 = BatchNorm(hidden*heads)
 
-        self.conv2 = GATConv(hidden*heads, hidden, heads=1, concat=True)
+        self.conv2 = GATv2Conv(hidden*heads, hidden, heads=1, edge_dim=edge_in, concat=True)
         self.norm2 = BatchNorm(hidden)
 
         self.climber_embed = nn.Sequential(
@@ -34,10 +35,11 @@ class ReachabilityFeaturesGNN(nn.Module):
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
         climber_vec = data.climber  # [B, climber_in]
+        edge_attr = data.edge_attr
 
         # Node feature GCN pipeline
-        x = F.relu(self.norm1(self.conv1(x, edge_index)))
-        x = F.relu(self.norm2(self.conv2(x, edge_index)))
+        x = F.relu(self.norm1(self.conv1(x, edge_index, edge_attr)))
+        x = F.relu(self.norm2(self.conv2(x, edge_index, edge_attr)))
 
         # Climber vector expansion
         climber_embed = self.climber_embed(climber_vec)  # [B, H]
@@ -158,7 +160,30 @@ def build_graph_reachability_features(route, hand_points, foot_points, climber, 
             if i != j:
                 edges.add(tuple(sorted((i, j))))
     
-    edge_index = torch.tensor(list(edges), dtype=torch.long).T
+    edge_index_np = np.array(list(edges)).T
+    edge_index = torch.tensor(edge_index_np, dtype=torch.long)
+
+    edge_lengths = []
+    dxs = []
+    dys = []
+    directions = []
+
+    for i, j in zip(edge_index_np[0], edge_index_np[1]):
+        p1 = route[i]
+        p2 = route[j]
+
+        dx = (p1[0] - p2[0]) * PIXEL_TO_CM
+        dy = (p1[1] - p2[1]) * PIXEL_TO_CM
+        dist = pixel_dist_to_cm(p1, p2)
+        angle = np.arctan2(dy, dx) / np.pi  # normalized angle
+
+        dxs.append(dx)
+        dys.append(dy)
+        edge_lengths.append(dist)
+        directions.append(angle)
+
+    edge_attr_np = np.stack([edge_lengths, dxs, dys, directions], axis=1)
+    edge_attr = torch.tensor(edge_attr_np, dtype=torch.float)
 
     climber_feat = torch.tensor([
         climber['height'],
@@ -169,7 +194,7 @@ def build_graph_reachability_features(route, hand_points, foot_points, climber, 
         climber["strength"]
     ], dtype=torch.float).unsqueeze(0)
 
-    graph = Data(x=x, edge_index=edge_index, y=y, climber=climber_feat)
+    graph = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y, climber=climber_feat)
 
     graph.hands = torch.tensor(hand_points, dtype=torch.float)
     graph.feet = torch.tensor(foot_points, dtype=torch.float)
