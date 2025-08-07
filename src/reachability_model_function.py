@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import numpy as np
 import torch
+import copy
 
 # Build the Graph
 def build_graph_reachability(route, hand_points, foot_points, climber, labels):
@@ -106,7 +107,7 @@ class FocalLoss(nn.Module):
         focal = ((1 - pt) ** self.gamma) * ce_loss
         return focal.mean()
     
-def plot_graph_prediction(graph, model, title):
+def plot_graph_prediction(graph, model, title, goal_xy=None):
     label_colors = {
         0: 'gray',  # unreachable
         1: 'blue',  # hand reachable
@@ -143,6 +144,10 @@ def plot_graph_prediction(graph, model, title):
             for fx, fy in feet:
                 ax.scatter(fx, fy, s=150, facecolors='none', edgecolors='purple', linewidths=2, marker='s', label='foot start')
 
+        if goal_xy is not None:
+            gx, gy = goal_xy
+            ax.scatter(gx, gy, s=200, facecolors='none', edgecolors='red', linewidths=3, marker='o', label='Goal')
+
         legend_elements = [
             Line2D([0], [0], marker='o', color='w', label=label_names[i],
                    markerfacecolor=label_colors[i], markersize=10, markeredgecolor='black')
@@ -151,7 +156,9 @@ def plot_graph_prediction(graph, model, title):
             Line2D([0], [0], marker='s', color='r', label='Hand Start',
                    markerfacecolor='none', markeredgewidth=2, markersize=10),
             Line2D([0], [0], marker='s', color='purple', label='Foot Start',
-                   markerfacecolor='none', markeredgewidth=2, markersize=10)
+                   markerfacecolor='none', markeredgewidth=2, markersize=10),
+            Line2D([0], [0], marker='o', color='red', label='Goal',
+                   markerfacecolor='none', markeredgewidth=3, markersize=10)
         ]
         ax.legend(handles=legend_elements, title="Predicted Labels")
 
@@ -162,3 +169,51 @@ def plot_graph_prediction(graph, model, title):
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+
+def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
+    device = next(model.parameters()).device
+    graph = copy.deepcopy(graph).to(device)
+
+    coords = graph.x[:, :2].cpu().numpy()
+    goal_idx = np.argmin([pixel_dist_to_cm(coord, goal_xy) for coord in coords])
+    step = 0
+
+    while step < max_steps:
+        step += 1
+        model.eval()
+        with torch.no_grad():
+            logits = model(graph)
+            preds = logits.argmax(dim=1).cpu().numpy()
+
+        goal_label = preds[goal_idx]
+        if goal_label != 0:
+            print(f"Success: Model predict climber can reach the goal (label={goal_label}) in Step {step}")
+            break
+
+        # Get all the reachable holds
+        hand_idx = np.where((preds == 1) | (preds == 3))[0]
+        foot_idx = np.where((preds == 2) | (preds == 3))[0]
+
+        if len(hand_idx) == 0 and len(foot_idx) == 0:
+            print("No Reachable Holds.")
+            break
+
+        hand_dists = [(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in hand_idx]
+        hand_dists.sort(key=lambda x: x[1])
+        selected_hands = [coords[i] for i, _ in hand_dists[:2]]
+
+        foot_dists = [(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in foot_idx]
+        used_idxs = {i for i, _ in hand_dists[:2]}
+        foot_dists = [(i, d) for i, d in foot_dists if i not in used_idxs]
+        foot_dists.sort(key=lambda x: x[1])
+        selected_feet = [coords[i] for i, _ in foot_dists[:2]]
+
+        if len(selected_hands) > 0:
+            graph.hands = torch.tensor(selected_hands, dtype=torch.float, device=device)
+        if len(selected_feet) > 0:
+            graph.feet = torch.tensor(selected_feet, dtype=torch.float, device=device)
+
+        plot_graph_prediction(graph.cpu(), model, f"Step {step}", goal_xy)
+
+    else:
+        print(f"Climber cannot reach the goal in {max_steps} steps.")
