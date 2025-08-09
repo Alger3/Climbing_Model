@@ -12,18 +12,23 @@ import torch
 import copy
 
 # Build the Graph
-def build_graph_reachability(route, hand_points, foot_points, climber, labels):
+def build_graph_reachability(route, hand_points, foot_points, climber, labels, epsilon_cm=1.0):
     node_features = []
 
     for p in route:
         hand_dists = [pixel_dist_to_cm(p, h) for h in hand_points]
         foot_dists = [pixel_dist_to_cm(p, f) for f in foot_points]
 
+        is_hand_point = int(min(hand_dists) <= epsilon_cm)
+        is_foot_point = int(min(foot_dists) <= epsilon_cm)
+
         feature = list(p) + [  # x, y
             np.mean(hand_dists),
             np.min(hand_dists),
             np.mean(foot_dists),
             np.min(foot_dists),
+            float(is_hand_point),
+            float(is_foot_point)
         ]
         node_features.append(feature)
 
@@ -65,7 +70,7 @@ def build_graph_reachability(route, hand_points, foot_points, climber, labels):
     return graph
 
 class ReachabilityGNN(nn.Module):
-    def __init__(self, node_in=6, climber_in=4, hidden=64, out=4, dropout=0.2):
+    def __init__(self, node_in=8, climber_in=4, hidden=64, out=4, dropout=0.2):
         super().__init__()
         self.dropout = dropout
         self.conv1 = GATConv(node_in, hidden, heads=2, concat=False)
@@ -172,18 +177,21 @@ def plot_graph_prediction(graph, model, title, goal_xy=None):
 
 def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
     device = next(model.parameters()).device
-    graph = copy.deepcopy(graph).to(device)
+    g = copy.deepcopy(graph).to(device)
 
-    coords = graph.x[:, :2].cpu().numpy()
+    coords = g.x[:, :2].cpu().numpy()
     goal_idx = np.argmin([pixel_dist_to_cm(coord, goal_xy) for coord in coords])
     step = 0
 
-    while step < max_steps:
+    while step <= max_steps:
         step += 1
         model.eval()
         with torch.no_grad():
-            logits = model(graph)
+            logits = model(g)
+            coords = g.x[:, :2].cpu().numpy()
             preds = logits.argmax(dim=1).cpu().numpy()
+
+        plot_graph_prediction(g.cpu(), model, f"Step {step}", goal_xy)
 
         goal_label = preds[goal_idx]
         if goal_label != 0:
@@ -209,11 +217,19 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
         selected_feet = [coords[i] for i, _ in foot_dists[:2]]
 
         if len(selected_hands) > 0:
-            graph.hands = torch.tensor(selected_hands, dtype=torch.float, device=device)
+            g.hands = torch.tensor(selected_hands, dtype=torch.float, device=device)
         if len(selected_feet) > 0:
-            graph.feet = torch.tensor(selected_feet, dtype=torch.float, device=device)
+            g.feet = torch.tensor(selected_feet, dtype=torch.float, device=device)
 
-        plot_graph_prediction(graph.cpu(), model, f"Step {step}", goal_xy)
+        new_x = g.x.clone().cpu().numpy()
+        for i, p in enumerate(coords):
+            hand_dists_all = [pixel_dist_to_cm(p, h) for h in g.hands.cpu().numpy()]
+            foot_dists_all = [pixel_dist_to_cm(p, f) for f in g.feet.cpu().numpy()]
+            new_x[i, 2] = np.mean(hand_dists_all)  # mean hand dist
+            new_x[i, 3] = np.min(hand_dists_all)   # min hand dist
+            new_x[i, 4] = np.mean(foot_dists_all)  # mean foot dist
+            new_x[i, 5] = np.min(foot_dists_all)   # min foot dist
+        g.x = torch.tensor(new_x, dtype=torch.float, device=device)
 
     else:
         print(f"Climber cannot reach the goal in {max_steps} steps.")
