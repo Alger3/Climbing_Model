@@ -76,6 +76,7 @@ class ReachabilityGNN(nn.Module):
         self.conv1 = GATConv(node_in, hidden, heads=2, concat=False)
         self.conv2 = GATConv(hidden, hidden, heads=2, concat=False)
         self.climber_embed = nn.Linear(climber_in, hidden)
+
         self.classifier = nn.Sequential(
             nn.Linear(hidden*2, hidden),
             nn.ReLU(),
@@ -83,9 +84,23 @@ class ReachabilityGNN(nn.Module):
             nn.Linear(hidden, out)
         )
 
+        self.flag_head = nn.Sequential(
+            nn.Linear(2, 8),
+            nn.ReLU(),
+            nn.Linear(8, out)
+        )
+
+        with torch.no_grad():
+            for m in self.flag_head:
+                if isinstance(m, nn.Linear):
+                    nn.init.zeros_(m.bias)
+                    nn.init.normal_(m.weight, std=1e-3)
+
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
         climber_vec = data.climber  # shape: [batch_size, 4]
+
+        flags = x[:, -2:]
 
         x = F.relu(self.conv1(x, edge_index))
         x = F.relu(self.conv2(x, edge_index))
@@ -96,8 +111,14 @@ class ReachabilityGNN(nn.Module):
 
         climber_per_node = climber_embed[batch]                 # [N, 64]
 
-        x = torch.cat([x, climber_per_node], dim=1)             # [N, 128]
-        return self.classifier(x)                               # [N, 4]
+        # 主分支 logits
+        feat = torch.cat([x, climber_per_node], dim=1)            # [N, 2H]
+        logits_main = self.classifier(feat)                       # [N, out]
+
+        # flag 分支 logits（只看 is_hand_point/is_foot_point）
+        logits_flag = self.flag_head(flags) 
+
+        return logits_main + logits_flag                            # [N, 4]
     
 # Used in imbalanced data
 class FocalLoss(nn.Module):
@@ -176,6 +197,7 @@ def plot_graph_prediction(graph, model, title, goal_xy=None):
         plt.show()
 
 def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
+    epsilon_cm = 1.0
     device = next(model.parameters()).device
     g = copy.deepcopy(graph).to(device)
 
@@ -225,10 +247,15 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
         for i, p in enumerate(coords):
             hand_dists_all = [pixel_dist_to_cm(p, h) for h in g.hands.cpu().numpy()]
             foot_dists_all = [pixel_dist_to_cm(p, f) for f in g.feet.cpu().numpy()]
+            is_hand_point = int(min(hand_dists_all) <= epsilon_cm)
+            is_foot_point = int(min(foot_dists_all) <= epsilon_cm)
+
             new_x[i, 2] = np.mean(hand_dists_all)  # mean hand dist
             new_x[i, 3] = np.min(hand_dists_all)   # min hand dist
             new_x[i, 4] = np.mean(foot_dists_all)  # mean foot dist
             new_x[i, 5] = np.min(foot_dists_all)   # min foot dist
+            new_x[i, 6] = is_hand_point
+            new_x[i, 7] = is_foot_point
         g.x = torch.tensor(new_x, dtype=torch.float, device=device)
 
     else:
