@@ -270,7 +270,8 @@ def plot_graph_prediction(graph, model, title, goal_xy=None):
         plt.tight_layout()
         plt.show()
 
-def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
+def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30, 
+                           foot_below_hands=True, y_margin=0):
     epsilon_cm = 1.0
     device = next(model.parameters()).device
     g = copy.deepcopy(graph).to(device)
@@ -294,7 +295,7 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
             print(f"Success: Model predict climber can reach the goal (label={goal_label}) in Step {step}")
             break
 
-        # 所有可及点的索引
+        # 可及索引
         hand_idx = np.where((preds == 1) | (preds == 3))[0]
         foot_idx = np.where((preds == 2) | (preds == 3))[0]
 
@@ -302,9 +303,10 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
             print("No Reachable Holds.")
             break
 
+        # ---------- 选手 ----------
         selected_hand_indices = []
         if len(hand_idx) > 0:
-            # 第1只手：离目标最近
+            # 手1：离目标最近
             hand_dists_goal = sorted(
                 [(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in hand_idx],
                 key=lambda x: x[1]
@@ -312,22 +314,32 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
             first_hand = hand_dists_goal[0][0]
             selected_hand_indices.append(first_hand)
 
-            # 第2只手：在剩余手点中，离第1只手最近
+            # 手2：离手1最近
             if len(hand_idx) > 1:
                 first_xy = coords[first_hand]
                 candidates = [i for i in hand_idx if i != first_hand]
-                second_hand = min(
-                    candidates,
-                    key=lambda j: pixel_dist_to_cm(coords[j], first_xy)
-                )
+                second_hand = min(candidates, key=lambda j: pixel_dist_to_cm(coords[j], first_xy))
                 selected_hand_indices.append(second_hand)
 
         selected_hands = [coords[i] for i in selected_hand_indices]
 
+        # ---------- 选脚：尽量在手的“下面” ----------
         used_idxs = set(selected_hand_indices)
-        foot_dists = [(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in foot_idx]
-        foot_dists = [(i, d) for i, d in foot_dists if i not in used_idxs]
-        foot_dists.sort(key=lambda x: x[1])
+        # 原始候选（不含已选手）
+        base_foot_candidates = [i for i in foot_idx if i not in used_idxs]
+
+        # 若需要脚在手下方，则先筛一遍
+        foot_candidates = base_foot_candidates
+        if foot_below_hands and len(selected_hands) > 0:
+            hand_y_max = max(h[1] for h in selected_hands)  # 像素坐标，y越大越“下”
+            filtered = [i for i in base_foot_candidates if coords[i][1] > hand_y_max + y_margin]
+            # 如果筛完一个都没有，就回退用原始候选
+            if len(filtered) > 0:
+                foot_candidates = filtered
+
+        # 在候选里按目标距离排序，取前2
+        foot_dists = sorted([(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in foot_candidates],
+                            key=lambda x: x[1])
         selected_feet = [coords[i] for i, _ in foot_dists[:2]]
 
         # 写回选择结果
@@ -336,7 +348,7 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
         if len(selected_feet) > 0:
             g.feet = torch.tensor(selected_feet, dtype=torch.float, device=device)
 
-        # 依据当前手/脚重算节点特征（你的原始逻辑保持不变）
+        # 重算节点特征（保持你原逻辑）
         new_x = g.x.clone().cpu().numpy()
         for i, p in enumerate(coords):
             hand_dists_all = [pixel_dist_to_cm(p, h) for h in g.hands.cpu().numpy()]
@@ -351,5 +363,6 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30):
             new_x[i, 6] = is_hand_point
             new_x[i, 7] = is_foot_point
         g.x = torch.tensor(new_x, dtype=torch.float, device=device)
+
     else:
         print(f"Climber cannot reach the goal in {max_steps} steps.")
