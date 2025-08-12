@@ -59,7 +59,9 @@ def build_graph_reachability(route, hand_points, foot_points, climber, labels, e
         climber['height'],
         climber['ape_index'],
         climber['flexibility'],
-        climber['leg_len_factor']
+        climber['leg_len_factor'],
+        climber["arm_span"],
+        climber["leg_span"]
     ], dtype=torch.float).unsqueeze(0)
 
     graph = Data(x=x, edge_index=edge_index, y=y, climber=climber_feat)
@@ -136,7 +138,7 @@ class ReachabilityGNN(nn.Module):
         return logits_main + self.alpha_flag * logits_flag
 
 class ReachabilityGNNv11(nn.Module):
-    def __init__(self, node_in=8, climber_in=4, hidden=64, out=4, dropout=0.2):
+    def __init__(self, node_in=8, climber_in=6, hidden=64, out=4, dropout=0.2):
         super().__init__()
         self.dropout = dropout
         self.conv1 = GATConv(node_in, hidden, heads=2, concat=False)
