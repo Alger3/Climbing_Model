@@ -12,8 +12,11 @@ import copy
 from itertools import combinations
 from dataset_function import get_reach_ranges
 
+# TODO: 目前只有hands和feet的改变才会使得x变化，从而影响reach points
 def build_graph_reachability(route, hand_points, foot_points, climber, labels, epsilon_cm=1.0):
     node_features = []
+
+    arm_reach, leg_reach = get_reach_ranges(climber)
 
     for p in route:
         hand_dists = [pixel_dist_to_cm(p, h) for h in hand_points]
@@ -22,11 +25,11 @@ def build_graph_reachability(route, hand_points, foot_points, climber, labels, e
         is_hand_point = int(min(hand_dists) <= epsilon_cm)
         is_foot_point = int(min(foot_dists) <= epsilon_cm)
 
-        feature = list(p) + [  # x, y
-            np.mean(hand_dists),
-            np.min(hand_dists),
-            np.mean(foot_dists),
-            np.min(foot_dists),
+        feature = list(p) + [  # (x,y)
+            np.clip(np.mean(hand_dists) / arm_reach, 0.0, 3.0),
+            np.clip(np.min(hand_dists) / arm_reach, 0.0, 3.0),
+            np.clip(np.mean(foot_dists) / leg_reach, 0.0, 3.0),
+            np.clip(np.min(foot_dists) / leg_reach, 0.0, 3.0),
             float(is_hand_point),
             float(is_foot_point)
         ]
@@ -188,6 +191,41 @@ class ReachabilityGNNv11(nn.Module):
 
         return logits_main + logits_flag                            # [N, 4]
 
+class ReachabilityGNNv13(nn.Module):
+    def __init__(self, node_in_cont=6, climber_in=6, hidden=64, out=4, dropout=0.2, alpha_flag=0.03):
+        super().__init__()
+        self.dropout = dropout
+        self.alpha_flag = alpha_flag
+
+        self.conv1 = GATConv(hidden, hidden, heads=1, concat=False)
+        self.conv2 = GATConv(hidden, hidden, heads=1, concat=False)
+
+        self.lin_in = nn.Linear(node_in_cont, hidden)
+        self.climber_embed = nn.Sequential(nn.LayerNorm(climber_in), nn.Linear(climber_in, hidden), nn.ReLU())
+        self.film1 = nn.Linear(hidden, 2*hidden)
+        self.film2 = nn.Linear(hidden, 2*hidden)
+
+        self.cls = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden, out))
+        self.flag_head = nn.Sequential(nn.Linear(2, 8), nn.ReLU(), nn.Linear(8, out))
+
+    def apply_film(self, h, c, film, batch):
+        gamma, beta = torch.chunk(film(c), 2, dim=-1)
+        gamma, beta = gamma[batch], beta[batch]
+        return h * (1 + gamma) + beta
+
+    def forward(self, data):
+        x_all, edge_index, batch = data.x, data.edge_index, data.batch
+        x_cont, flags = x_all[:, :6], x_all[:, 6:8]
+
+        h = self.lin_in(x_cont)
+        c = self.climber_embed(data.climber)
+        h = self.apply_film(h, c, self.film1, batch); h = F.relu(self.conv1(h, edge_index))
+        h = self.apply_film(h, c, self.film2, batch); h = F.relu(self.conv2(h, edge_index))
+
+        logits = self.cls(h) + self.alpha_flag * self.flag_head(flags)
+        return logits
+
+
 # ------------------------------------------------------------
 # Focal Loss（不平衡）
 # ------------------------------------------------------------
@@ -282,6 +320,17 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30,
     goal_idx = np.argmin([pixel_dist_to_cm(coord, goal_xy) for coord in coords])
     step = 0
 
+    climber = {
+        "height": g.climber[0][0].item(),
+        "ape_index": g.climber[0][1].item(),
+        "flexibility": g.climber[0][2].item(),
+        "leg_len_factor": g.climber[0][3].item(),
+        "arm_span": g.climber[0][4].item(),
+        "leg_span": g.climber[0][5].item()
+    }
+
+    arm_reach, leg_reach = get_reach_ranges(climber)
+
     while step <= max_steps:
         step += 1
         model.eval()
@@ -351,19 +400,23 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30,
             g.feet = torch.tensor(selected_feet, dtype=torch.float, device=device)
 
         # 重算节点特征（保持你原逻辑）
+        hands  = g.hands.cpu().numpy()
+        feet   = g.feet.cpu().numpy()
         new_x = g.x.clone().cpu().numpy()
         for i, p in enumerate(coords):
-            hand_dists_all = [pixel_dist_to_cm(p, h) for h in g.hands.cpu().numpy()]
-            foot_dists_all = [pixel_dist_to_cm(p, f) for f in g.feet.cpu().numpy()]
-            is_hand_point = int(min(hand_dists_all) <= epsilon_cm)
-            is_foot_point = int(min(foot_dists_all) <= epsilon_cm)
+            hand_dists = [pixel_dist_to_cm(p, h) for h in hands]
+            foot_dists = [pixel_dist_to_cm(p, f) for f in feet]
 
-            new_x[i, 2] = np.mean(hand_dists_all)  # mean hand dist
-            new_x[i, 3] = np.min(hand_dists_all)   # min hand dist
-            new_x[i, 4] = np.mean(foot_dists_all)  # mean foot dist
-            new_x[i, 5] = np.min(foot_dists_all)   # min foot dist
-            new_x[i, 6] = is_hand_point
-            new_x[i, 7] = is_foot_point
+            is_hand_point = int(min(hand_dists) <= epsilon_cm)
+            is_foot_point = int(min(foot_dists) <= epsilon_cm)
+
+            new_x[i, 2] = np.clip(np.mean(hand_dists) / arm_reach, 0.0, 3.0)
+            new_x[i, 3] = np.clip(np.min(hand_dists) / arm_reach, 0.0, 3.0)
+            new_x[i, 4] = np.clip(np.mean(foot_dists) / leg_reach, 0.0, 3.0)
+            new_x[i, 5] = np.clip(np.min(foot_dists) / leg_reach, 0.0, 3.0)
+
+            new_x[i, 6] = float(is_hand_point)
+            new_x[i, 7] = float(is_foot_point)
         g.x = torch.tensor(new_x, dtype=torch.float, device=device)
 
     else:
