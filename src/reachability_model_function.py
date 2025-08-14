@@ -11,8 +11,68 @@ import torch
 import copy
 from itertools import combinations
 from dataset_function import get_reach_ranges
+from route_parser import PIXEL_TO_CM
 
-# TODO: 目前只有hands和feet的改变才会使得x变化，从而影响reach points
+def build_single_graph_reachability(route, hand_points, foot_points, climber, epsilon_cm=1.0):
+    node_features = []
+
+    arm_reach, leg_reach = get_reach_ranges(climber)
+
+    for p in route:
+        hand_dists = [pixel_dist_to_cm(p, h) for h in hand_points]
+        foot_dists = [pixel_dist_to_cm(p, f) for f in foot_points]
+
+        is_hand_point = int(min(hand_dists) <= epsilon_cm)
+        is_foot_point = int(min(foot_dists) <= epsilon_cm)
+
+        feature = list(p) + [  # (x,y)
+            np.clip(np.mean(hand_dists) / arm_reach, 0.0, 3.0),
+            np.clip(np.min(hand_dists) / arm_reach, 0.0, 3.0),
+            np.clip(np.mean(foot_dists) / leg_reach, 0.0, 3.0),
+            np.clip(np.min(foot_dists) / leg_reach, 0.0, 3.0),
+            float(is_hand_point),
+            float(is_foot_point)
+        ]
+        node_features.append(feature)
+
+    x = torch.tensor(node_features, dtype=torch.float)
+
+    # 全连接图
+    # num_nodes = len(route)
+    # edge_index = torch.combinations(torch.arange(num_nodes), r=2).T
+    # # Let the edge become undirected edge
+    # edge_index = torch.cat([edge_index, edge_index[[1, 0]]], dim=1)
+
+    # KNN
+    route_array = np.array(route)
+
+    nbrs = NearestNeighbors(n_neighbors=min(10,len(route)), algorithm='auto').fit(route_array)
+    _, indices = nbrs.kneighbors(route_array)
+
+    edges = set()
+    for i, neighbors in enumerate(indices):
+        for j in neighbors:
+            if i != j:
+                edges.add(tuple(sorted((i, j))))
+    
+    edge_index = torch.tensor(list(edges), dtype=torch.long).T
+
+    climber_feat = torch.tensor([
+        climber['height'],
+        climber['ape_index'],
+        climber['flexibility'],
+        climber['leg_len_factor'],
+        climber["arm_span"],
+        climber["leg_span"]
+    ], dtype=torch.float).unsqueeze(0)
+
+    graph = Data(x=x, edge_index=edge_index, climber=climber_feat)
+
+    graph.hands = torch.tensor(hand_points, dtype=torch.float)
+    graph.feet = torch.tensor(foot_points, dtype=torch.float)
+
+    return graph
+
 def build_graph_reachability(route, hand_points, foot_points, climber, labels, epsilon_cm=1.0):
     node_features = []
 
@@ -75,9 +135,7 @@ def build_graph_reachability(route, hand_points, foot_points, climber, labels, e
     return graph
 
 
-# ------------------------------------------------------------
 # Model: GAT + FiLM (主干不吃 flags；flag 旁路加权)
-# ------------------------------------------------------------
 class ReachabilityGNN(nn.Module):
     def __init__(self, node_in_main=6, climber_in=4, hidden=64, out=4, dropout=0.2, alpha_flag=0.05, heads=2):
         super().__init__()
@@ -226,9 +284,7 @@ class ReachabilityGNNv13(nn.Module):
         return logits
 
 
-# ------------------------------------------------------------
 # Focal Loss（不平衡）
-# ------------------------------------------------------------
 class FocalLoss(nn.Module):
     def __init__(self, gamma=2.0, weight=None, reduction='mean'):
         super().__init__()
@@ -246,6 +302,46 @@ class FocalLoss(nn.Module):
             return loss.sum()
         return loss
 
+def recompute_node_features_with_climber(g, epsilon_cm=1.0, clip_max=3.0):
+    import numpy as np, torch
+
+    # 取坐标与起始手脚
+    coords = g.x[:, :2].cpu().numpy()
+    hands  = g.hands.cpu().numpy()
+    feet   = g.feet.cpu().numpy()
+
+    climber = {
+        "height": g.climber[0][0].item(),
+        "ape_index": g.climber[0][1].item(),
+        "flexibility": g.climber[0][2].item(),
+        "leg_len_factor": g.climber[0][3].item(),
+        "arm_span": g.climber[0][4].item(),
+        "leg_span": g.climber[0][5].item()
+    }
+
+    arm_reach, leg_reach = get_reach_ranges(climber)
+
+
+
+    new = g.x.clone().cpu().numpy()
+
+    for i, p in enumerate(coords):
+        hand_dists = [pixel_dist_to_cm(p, h) for h in hands]
+        foot_dists = [pixel_dist_to_cm(p, f) for f in feet]
+
+        is_hand_point = int(min(hand_dists) <= epsilon_cm)
+        is_foot_point = int(min(foot_dists) <= epsilon_cm)
+
+        new[i, 2] = np.clip(np.mean(hand_dists) / arm_reach, 0.0, 3.0)
+        new[i, 3] = np.clip(np.min(hand_dists) / arm_reach, 0.0, 3.0)
+        new[i, 4] = np.clip(np.mean(foot_dists) / leg_reach, 0.0, 3.0)
+        new[i, 5] = np.clip(np.min(foot_dists) / leg_reach, 0.0, 3.0)
+
+        new[i, 6] = float(is_hand_point)
+        new[i, 7] = float(is_foot_point)
+
+    g.x = torch.tensor(new, dtype=g.x.dtype, device=g.x.device)
+    return g
 
 def plot_graph_prediction(graph, model, title, goal_xy=None):
     label_colors = {
@@ -310,6 +406,7 @@ def plot_graph_prediction(graph, model, title, goal_xy=None):
         plt.tight_layout()
         plt.show()
 
+# 一次（一个step）直接更新手和脚
 def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30, 
                            foot_below_hands=True, y_margin=0):
     epsilon_cm = 1.0
@@ -421,3 +518,540 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30,
 
     else:
         print(f"Climber cannot reach the goal in {max_steps} steps.")
+
+# 一次（一个step）只更新手或者脚
+def simulate_climb_to_goal_v2(
+    graph, model, goal_xy, max_steps=30,
+    foot_below_hands=True, y_margin=0,
+    angle_threshold_deg=30.0,      # 超过该角度先动脚，否则动手
+    foot_align_w=1.0,              # 动脚时：脚中心向手中心对齐的惩罚权重（越大越“居中”）
+    foot_goal_w=0.1,               # 动脚时：仍给一点“靠近目标”的偏好（0~0.3）
+    prefer_hands_above_feet=True,  
+    y_above_margin_hand=0         
+):
+    import copy, numpy as np, torch, math
+
+    epsilon_cm = 1.0
+    device = next(model.parameters()).device
+    g = copy.deepcopy(graph).to(device)
+
+    def get_np(arr):
+        if arr is None: return np.zeros((0,2), dtype=float)
+        x = arr.detach().cpu().numpy()
+        return x if x.size else np.zeros((0,2), dtype=float)
+
+    def centers_from_state(g):
+        hands_np = get_np(getattr(g, "hands", None))
+        feet_np  = get_np(getattr(g, "feet",  None))
+        hand_c = hands_np.mean(axis=0) if hands_np.shape[0] > 0 else None
+        foot_c = feet_np.mean(axis=0)  if feet_np.shape[0]  > 0 else None
+        return hand_c, foot_c, hands_np, feet_np
+
+    def angle_to_vertical_deg(hand_c, foot_c):
+        # 以脚中心为角点，计算连线与“竖直线”的夹角（0°=完全竖直，90°=完全水平）
+        if hand_c is None or foot_c is None:
+            return None
+        dx = hand_c[0] - foot_c[0]
+        dy = hand_c[1] - foot_c[1]   # 像素坐标 y 向下增大
+        ang = math.degrees(math.atan2(abs(dx), abs(dy) + 1e-9))
+        return ang
+
+    def map_points_to_indices(points, coords):
+        # 将任意坐标映射回最近节点索引（用于“排除已占用手点”）
+        idxs = []
+        for p in points:
+            j = int(np.argmin(np.linalg.norm(coords - p, axis=1)))
+            idxs.append(j)
+        return idxs
+
+    coords = g.x[:, :2].cpu().numpy()
+    goal_idx = np.argmin([pixel_dist_to_cm(coord, goal_xy) for coord in coords])
+    step = 0
+
+    climber = {
+        "height": g.climber[0][0].item(),
+        "ape_index": g.climber[0][1].item(),
+        "flexibility": g.climber[0][2].item(),
+        "leg_len_factor": g.climber[0][3].item(),
+        "arm_span": g.climber[0][4].item(),
+        "leg_span": g.climber[0][5].item()
+    }
+    arm_reach, leg_reach = get_reach_ranges(climber)
+
+    while step <= max_steps:
+        step += 1
+        model.eval()
+        with torch.no_grad():
+            logits = model(g)
+            coords = g.x[:, :2].cpu().numpy()
+            preds = logits.argmax(dim=1).cpu().numpy()
+
+        plot_graph_prediction(g.cpu(), model, f"Step {step}", goal_xy)
+
+        goal_label = preds[goal_idx]
+        if goal_label != 0:
+            print(f"Success: Model predict climber can reach the goal (label={goal_label}) in Step {step}")
+            break
+
+        # ---- 可及集合 ----
+        hand_idx = np.where((preds == 1) | (preds == 3))[0]
+        foot_idx = np.where((preds == 2) | (preds == 3))[0]
+        if len(hand_idx) == 0 and len(foot_idx) == 0:
+            print("No Reachable Holds.")
+            break
+
+        # ---- 根据当前状态计算角度，决定动手还是动脚 ----
+        hand_c, foot_c, hands_np, feet_np = centers_from_state(g)
+        angle_deg = angle_to_vertical_deg(hand_c, foot_c)
+
+        # 若还没有手或脚，先动手初始化（下一步才有角度可用）
+        move_what = None
+        if angle_deg is None:
+            move_what = "hands" if len(hand_idx) > 0 else ("feet" if len(foot_idx) > 0 else None)
+        else:
+            move_what = "feet" if angle_deg > angle_threshold_deg else "hands"
+
+        # ---- 选 / 动 手（加入“在脚上方优先”的偏好）----
+        if move_what == "hands" and len(hand_idx) > 0:
+            # 1) 组建候选集
+            hand_candidates = list(hand_idx)
+            if (prefer_hands_above_feet and feet_np.size > 0):
+                # 脚中更靠上的那只脚（y 更小=更靠上）
+                feet_y_min = float(feet_np[:, 1].min())
+                thresh = feet_y_min - y_above_margin_hand
+                above_feet = [i for i in hand_candidates if coords[i][1] < thresh]
+                if len(above_feet) > 0:
+                    hand_candidates = above_feet  # 有就强制只在脚上方里选
+
+            # 2) 手1：在 hand_candidates 里离目标最近
+            hand_dists_goal = sorted(
+                [(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in hand_candidates],
+                key=lambda x: x[1]
+            )
+            first_hand = hand_dists_goal[0][0]
+            selected_hand_indices = [first_hand]
+
+            # 3) 手2：优先在 hand_candidates 里离手1最近；若只有 1 个，则回退到全体 hand_idx
+            if len(hand_candidates) > 1:
+                first_xy = coords[first_hand]
+                candidates = [i for i in hand_candidates if i != first_hand]
+                second_hand = min(candidates, key=lambda j: pixel_dist_to_cm(coords[j], first_xy))
+                selected_hand_indices.append(second_hand)
+            elif len(hand_idx) > 1:
+                first_xy = coords[first_hand]
+                candidates = [i for i in hand_idx if i != first_hand]
+                second_hand = min(candidates, key=lambda j: pixel_dist_to_cm(coords[j], first_xy))
+                selected_hand_indices.append(second_hand)
+
+            selected_hands = [coords[i] for i in selected_hand_indices]
+            if len(selected_hands) > 0:
+                g.hands = torch.tensor(selected_hands, dtype=torch.float, device=device)
+
+        # ---- 选 / 动 脚（“朝手方向对齐”）----
+        elif move_what == "feet" and len(foot_idx) > 0:
+            current_hand_indices = map_points_to_indices(hands_np, coords) if hands_np.size else []
+            used_idxs = set(current_hand_indices)
+
+            base_foot_candidates = [i for i in foot_idx if i not in used_idxs]
+            if len(base_foot_candidates) == 0:
+                selected_feet_indices = []
+            else:
+                foot_candidates = base_foot_candidates
+                if foot_below_hands and hands_np.size > 0:
+                    hand_y_max = float(np.max(hands_np[:, 1]))  # y 越大越“下”
+                    filtered = [i for i in base_foot_candidates if coords[i][1] > hand_y_max + y_margin]
+                    if len(filtered) > 0:
+                        foot_candidates = filtered
+
+                if len(foot_candidates) <= 2:
+                    foot_dists = sorted([(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in foot_candidates],
+                                        key=lambda x: x[1])
+                    selected_feet_indices = [i for i, _ in foot_dists[:2]]
+                else:
+                    cx = float(np.mean(hands_np[:, 0])) if hands_np.size > 0 else \
+                         float(np.mean([coords[i][0] for i in foot_candidates]))
+                    def d_goal(i): return pixel_dist_to_cm(coords[i], goal_xy)
+                    best = None  # (score, (i,j))
+                    cand = foot_candidates
+                    for a in range(len(cand)):
+                        for b in range(a+1, len(cand)):
+                            i, j = cand[a], cand[b]
+                            feet_center_x = 0.5 * (coords[i][0] + coords[j][0])
+                            align_pen = abs(feet_center_x - cx)   # 水平对齐误差（像素）
+                            score = foot_align_w * align_pen + foot_goal_w * (d_goal(i) + d_goal(j))
+                            if (best is None) or (score < best[0]):
+                                best = (score, (i, j))
+                    selected_feet_indices = list(best[1]) if best is not None else []
+
+            selected_feet = [coords[i] for i in selected_feet_indices]
+            if len(selected_feet) > 0:
+                g.feet = torch.tensor(selected_feet, dtype=torch.float, device=device)
+
+        # ---- 重算节点特征（保持你的原逻辑）----
+        hands = g.hands.cpu().numpy()
+        feet  = g.feet.cpu().numpy()
+        new_x = g.x.clone().cpu().numpy()
+        for i, p in enumerate(coords):
+            hand_dists = [pixel_dist_to_cm(p, h) for h in hands]
+            foot_dists = [pixel_dist_to_cm(p, f) for f in feet]
+
+            is_hand_point = int(min(hand_dists) <= epsilon_cm)
+            is_foot_point = int(min(foot_dists) <= epsilon_cm)
+
+            new_x[i, 2] = np.clip(np.mean(hand_dists) / arm_reach, 0.0, 3.0)
+            new_x[i, 3] = np.clip(np.min(hand_dists)  / arm_reach, 0.0, 3.0)
+            new_x[i, 4] = np.clip(np.mean(foot_dists) / leg_reach, 0.0, 3.0)
+            new_x[i, 5] = np.clip(np.min(foot_dists)  / leg_reach, 0.0, 3.0)
+            new_x[i, 6] = float(is_hand_point)
+            new_x[i, 7] = float(is_foot_point)
+        g.x = torch.tensor(new_x, dtype=torch.float, device=device)
+
+    else:
+        print(f"Climber cannot reach the goal in {max_steps} steps.")
+
+def calculate_the_step_to_goal(graph, model, goal_xy, max_steps=50, 
+                               foot_below_hands=True, y_margin=0):
+    """
+    无可视化：若模型在某一步预测目标点可达(非0标签)，返回该步数；若在 max_steps 内都不可达，返回 -1。
+    """
+    import copy
+    import numpy as np
+    import torch
+
+    epsilon_cm = 1.0
+    device = next(model.parameters()).device
+    g = copy.deepcopy(graph).to(device)
+
+    coords = g.x[:, :2].cpu().numpy()
+    goal_idx = np.argmin([pixel_dist_to_cm(coord, goal_xy) for coord in coords])
+    step = 0
+
+    climber = {
+        "height": g.climber[0][0].item(),
+        "ape_index": g.climber[0][1].item(),
+        "flexibility": g.climber[0][2].item(),
+        "leg_len_factor": g.climber[0][3].item(),
+        "arm_span": g.climber[0][4].item(),
+        "leg_span": g.climber[0][5].item()
+    }
+
+    arm_reach, leg_reach = get_reach_ranges(climber)
+
+    while step <= max_steps:
+        step += 1
+        model.eval()
+        with torch.no_grad():
+            logits = model(g)
+            coords = g.x[:, :2].cpu().numpy()
+            preds = logits.argmax(dim=1).cpu().numpy()
+
+        # 成功条件：目标点被预测为可达(非0标签)
+        if preds[goal_idx] != 0:
+            return step
+
+        # 可及索引
+        hand_idx = np.where((preds == 1) | (preds == 3))[0]
+        foot_idx = np.where((preds == 2) | (preds == 3))[0]
+
+        if len(hand_idx) == 0 and len(foot_idx) == 0:
+            return -1  # 无任何可及点，失败
+
+        # ---------- 选手 ----------
+        selected_hand_indices = []
+        if len(hand_idx) > 0:
+            # 手1：离目标最近
+            hand_dists_goal = sorted(
+                [(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in hand_idx],
+                key=lambda x: x[1]
+            )
+            first_hand = hand_dists_goal[0][0]
+            selected_hand_indices.append(first_hand)
+
+            # 手2：离手1最近
+            if len(hand_idx) > 1:
+                first_xy = coords[first_hand]
+                candidates = [i for i in hand_idx if i != first_hand]
+                second_hand = min(candidates, key=lambda j: pixel_dist_to_cm(coords[j], first_xy))
+                selected_hand_indices.append(second_hand)
+
+        selected_hands = [coords[i] for i in selected_hand_indices]
+
+        # ---------- 选脚：尽量在手的“下面” ----------
+        used_idxs = set(selected_hand_indices)
+        base_foot_candidates = [i for i in foot_idx if i not in used_idxs]
+
+        foot_candidates = base_foot_candidates
+        if foot_below_hands and len(selected_hands) > 0:
+            hand_y_max = max(h[1] for h in selected_hands)  # 像素坐标，y越大越“下”
+            filtered = [i for i in base_foot_candidates if coords[i][1] > hand_y_max + y_margin]
+            if len(filtered) > 0:
+                foot_candidates = filtered
+
+        foot_dists = sorted([(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in foot_candidates],
+                            key=lambda x: x[1])
+        selected_feet = [coords[i] for i, _ in foot_dists[:2]]
+
+        # 写回选择结果
+        if len(selected_hands) > 0:
+            g.hands = torch.tensor(selected_hands, dtype=torch.float, device=device)
+        if len(selected_feet) > 0:
+            g.feet = torch.tensor(selected_feet, dtype=torch.float, device=device)
+
+        # 重算节点特征
+        hands  = g.hands.cpu().numpy()
+        feet   = g.feet.cpu().numpy()
+        new_x = g.x.clone().cpu().numpy()
+        for i, p in enumerate(coords):
+            hand_dists = [pixel_dist_to_cm(p, h) for h in hands]
+            foot_dists = [pixel_dist_to_cm(p, f) for f in feet]
+
+            is_hand_point = int(min(hand_dists) <= epsilon_cm)
+            is_foot_point = int(min(foot_dists) <= epsilon_cm)
+
+            new_x[i, 2] = np.clip(np.mean(hand_dists) / arm_reach, 0.0, 3.0)
+            new_x[i, 3] = np.clip(np.min(hand_dists) / arm_reach, 0.0, 3.0)
+            new_x[i, 4] = np.clip(np.mean(foot_dists) / leg_reach, 0.0, 3.0)
+            new_x[i, 5] = np.clip(np.min(foot_dists) / leg_reach, 0.0, 3.0)
+
+            new_x[i, 6] = float(is_hand_point)
+            new_x[i, 7] = float(is_foot_point)
+        g.x = torch.tensor(new_x, dtype=torch.float, device=device)
+
+    # 循环结束仍未到达
+    return -1
+
+def calculate_the_step_to_goal_v2(
+    graph, model, goal_xy, max_steps=50,
+    foot_below_hands=True, y_margin=0,
+    angle_threshold_deg=30.0,      # 超过该角度先动脚，否则动手
+    foot_align_w=1.0,              # 动脚时：脚中心向手中心对齐的惩罚权重（越大越“居中”）
+    foot_goal_w=0.1,               # 动脚时：仍给一点“靠近目标”的偏好（0~0.3）
+    prefer_hands_above_feet=True,  
+    y_above_margin_hand=0
+):
+    import copy, numpy as np, torch, math
+
+    epsilon_cm = 1.0
+    device = next(model.parameters()).device
+    g = copy.deepcopy(graph).to(device)
+
+    def get_np(arr):
+        if arr is None: return np.zeros((0,2), dtype=float)
+        x = arr.detach().cpu().numpy()
+        return x if x.size else np.zeros((0,2), dtype=float)
+
+    def centers_from_state(g):
+        hands_np = get_np(getattr(g, "hands", None))
+        feet_np  = get_np(getattr(g, "feet",  None))
+        hand_c = hands_np.mean(axis=0) if hands_np.shape[0] > 0 else None
+        foot_c = feet_np.mean(axis=0)  if feet_np.shape[0]  > 0 else None
+        return hand_c, foot_c, hands_np, feet_np
+
+    def angle_to_vertical_deg(hand_c, foot_c):
+        # 以脚中心为角点，连线与竖直线夹角（0°竖直，90°水平）
+        if hand_c is None or foot_c is None:
+            return None
+        dx = hand_c[0] - foot_c[0]
+        dy = hand_c[1] - foot_c[1]   # 像素坐标 y 向下增大
+        return math.degrees(math.atan2(abs(dx), abs(dy) + 1e-9))
+
+    def map_points_to_indices(points, coords):
+        idxs = []
+        for p in points:
+            j = int(np.argmin(np.linalg.norm(coords - p, axis=1)))
+            idxs.append(j)
+        return idxs
+
+    coords = g.x[:, :2].cpu().numpy()
+    goal_idx = np.argmin([pixel_dist_to_cm(coord, goal_xy) for coord in coords])
+    step = 0
+
+    climber = {
+        "height": g.climber[0][0].item(),
+        "ape_index": g.climber[0][1].item(),
+        "flexibility": g.climber[0][2].item(),
+        "leg_len_factor": g.climber[0][3].item(),
+        "arm_span": g.climber[0][4].item(),
+        "leg_span": g.climber[0][5].item()
+    }
+    arm_reach, leg_reach = get_reach_ranges(climber)
+
+    while step <= max_steps:
+        step += 1
+        model.eval()
+        with torch.no_grad():
+            logits = model(g)
+            coords = g.x[:, :2].cpu().numpy()
+            preds = logits.argmax(dim=1).cpu().numpy()
+
+        # 成功：目标点被预测为可达(非0标签)
+        if preds[goal_idx] != 0:
+            return step
+
+        # 可及集合
+        hand_idx = np.where((preds == 1) | (preds == 3))[0]
+        foot_idx = np.where((preds == 2) | (preds == 3))[0]
+        if len(hand_idx) == 0 and len(foot_idx) == 0:
+            return -1
+
+        # 根据角度决定动手还是动脚
+        hand_c, foot_c, hands_np, feet_np = centers_from_state(g)
+        angle_deg = angle_to_vertical_deg(hand_c, foot_c)
+        if angle_deg is None:
+            move_what = "hands" if len(hand_idx) > 0 else ("feet" if len(foot_idx) > 0 else None)
+        else:
+            move_what = "feet" if angle_deg > angle_threshold_deg else "hands"
+
+        # ---- 动手（带“手在脚上方优先”）----
+        if move_what == "hands" and len(hand_idx) > 0:
+            hand_candidates = list(hand_idx)
+            if (prefer_hands_above_feet and feet_np.size > 0):
+                feet_y_min = float(feet_np[:, 1].min())
+                thresh = feet_y_min - y_above_margin_hand
+                above_feet = [i for i in hand_candidates if coords[i][1] < thresh]
+                if len(above_feet) > 0:
+                    hand_candidates = above_feet
+
+            hand_dists_goal = sorted(
+                [(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in hand_candidates],
+                key=lambda x: x[1]
+            )
+            first_hand = hand_dists_goal[0][0]
+            selected_hand_indices = [first_hand]
+
+            if len(hand_candidates) > 1:
+                first_xy = coords[first_hand]
+                candidates = [i for i in hand_candidates if i != first_hand]
+                second_hand = min(candidates, key=lambda j: pixel_dist_to_cm(coords[j], first_xy))
+                selected_hand_indices.append(second_hand)
+            elif len(hand_idx) > 1:
+                first_xy = coords[first_hand]
+                candidates = [i for i in hand_idx if i != first_hand]
+                second_hand = min(candidates, key=lambda j: pixel_dist_to_cm(coords[j], first_xy))
+                selected_hand_indices.append(second_hand)
+
+            selected_hands = [coords[i] for i in selected_hand_indices]
+            if len(selected_hands) > 0:
+                g.hands = torch.tensor(selected_hands, dtype=torch.float, device=device)
+
+        # ---- 动脚（对齐手的中心）----
+        elif move_what == "feet" and len(foot_idx) > 0:
+            current_hand_indices = map_points_to_indices(hands_np, coords) if hands_np.size else []
+            used_idxs = set(current_hand_indices)
+
+            base_foot_candidates = [i for i in foot_idx if i not in used_idxs]
+            if len(base_foot_candidates) == 0:
+                selected_feet_indices = []
+            else:
+                foot_candidates = base_foot_candidates
+                if foot_below_hands and hands_np.size > 0:
+                    hand_y_max = float(np.max(hands_np[:, 1]))
+                    filtered = [i for i in base_foot_candidates if coords[i][1] > hand_y_max + y_margin]
+                    if len(filtered) > 0:
+                        foot_candidates = filtered
+
+                if len(foot_candidates) <= 2:
+                    foot_dists = sorted([(i, pixel_dist_to_cm(coords[i], goal_xy)) for i in foot_candidates],
+                                        key=lambda x: x[1])
+                    selected_feet_indices = [i for i, _ in foot_dists[:2]]
+                else:
+                    cx = float(np.mean(hands_np[:, 0])) if hands_np.size > 0 else \
+                         float(np.mean([coords[i][0] for i in foot_candidates]))
+                    def d_goal(i): return pixel_dist_to_cm(coords[i], goal_xy)
+                    best = None
+                    cand = foot_candidates
+                    for a in range(len(cand)):
+                        for b in range(a+1, len(cand)):
+                            i, j = cand[a], cand[b]
+                            feet_center_x = 0.5 * (coords[i][0] + coords[j][0])
+                            align_pen = abs(feet_center_x - cx)
+                            score = foot_align_w * align_pen + foot_goal_w * (d_goal(i) + d_goal(j))
+                            if (best is None) or (score < best[0]):
+                                best = (score, (i, j))
+                    selected_feet_indices = list(best[1]) if best is not None else []
+
+            selected_feet = [coords[i] for i in selected_feet_indices]
+            if len(selected_feet) > 0:
+                g.feet = torch.tensor(selected_feet, dtype=torch.float, device=device)
+
+        # ---- 重算节点特征 ----
+        hands = g.hands.cpu().numpy()
+        feet  = g.feet.cpu().numpy()
+        new_x = g.x.clone().cpu().numpy()
+        for i, p in enumerate(coords):
+            hand_dists = [pixel_dist_to_cm(p, h) for h in hands]
+            foot_dists = [pixel_dist_to_cm(p, f) for f in feet]
+
+            is_hand_point = int(min(hand_dists) <= epsilon_cm)
+            is_foot_point = int(min(foot_dists) <= epsilon_cm)
+
+            new_x[i, 2] = np.clip(np.mean(hand_dists) / arm_reach, 0.0, 3.0)
+            new_x[i, 3] = np.clip(np.min(hand_dists)  / arm_reach, 0.0, 3.0)
+            new_x[i, 4] = np.clip(np.mean(foot_dists) / leg_reach, 0.0, 3.0)
+            new_x[i, 5] = np.clip(np.min(foot_dists)  / leg_reach, 0.0, 3.0)
+            new_x[i, 6] = float(is_hand_point)
+            new_x[i, 7] = float(is_foot_point)
+        g.x = torch.tensor(new_x, dtype=torch.float, device=device)
+
+    # 未在 max_steps 内到达
+    return -1
+
+def plot_grouped_step_bars_counts(casual_steps, skilled_steps, elite_steps):
+    def ok_steps(a):
+        a = np.array(a)
+        return a[a >= 0]
+
+    C = ok_steps(casual_steps)
+    S = ok_steps(skilled_steps)
+    E = ok_steps(elite_steps)
+
+    step_vals = sorted(set(np.unique(C)) | set(np.unique(S)) | set(np.unique(E)))
+    if len(step_vals) == 0:
+        print("No successful climbs to plot.")
+        return
+
+    def counts(arr):
+        return np.array([np.sum(arr == v) for v in step_vals], dtype=int)
+
+    c_cnt = counts(C);  s_cnt = counts(S);  e_cnt = counts(E)
+
+    def success_rate(a):
+        a = np.array(a)
+        return float(np.mean(a >= 0)) if len(a) else 0.0
+    rC, rS, rE = success_rate(casual_steps), success_rate(skilled_steps), success_rate(elite_steps)
+
+    x = np.arange(len(step_vals))
+    w = 0.27
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars_c = ax.bar(x - w, c_cnt, width=w, label=f'Casual (n={len(C)}, rate={rC:.0%})')
+    bars_s = ax.bar(x     , s_cnt, width=w, label=f'Skilled (n={len(S)}, rate={rS:.0%})')
+    bars_e = ax.bar(x + w, e_cnt, width=w, label=f'Elite (n={len(E)}, rate={rE:.0%})')
+
+    # 给每个柱子添加数值标签
+    def add_labels(bar_container):
+        try:
+            ax.bar_label(bar_container, padding=2, fontsize=9)
+        except AttributeError:
+            # 兼容老版本 Matplotlib
+            for b in bar_container:
+                h = b.get_height()
+                ax.text(b.get_x() + b.get_width()/2, h, f'{int(h)}',
+                        ha='center', va='bottom', fontsize=9)
+
+    for bc in (bars_c, bars_s, bars_e):
+        add_labels(bc)
+
+    # 头顶留点空间，避免数字被挡
+    top = max([c_cnt.max(initial=0), s_cnt.max(initial=0), e_cnt.max(initial=0)])
+    ax.set_ylim(0, top * 1.15 + 1)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(step_vals)
+    ax.set_xlabel('Steps to goal (successful only)')
+    ax.set_ylabel('Count')
+    ax.set_title('Step distribution by group (counts)')
+    ax.legend()
+    ax.grid(axis='y', linestyle='--', alpha=0.35)
+    plt.tight_layout()
+    plt.show()
