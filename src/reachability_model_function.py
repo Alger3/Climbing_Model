@@ -407,7 +407,7 @@ def plot_graph_prediction(graph, model, title, goal_xy=None):
         plt.show()
 
 # 一次（一个step）直接更新手和脚
-def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30, 
+def simulate_climb_to_goal(graph, model, goal_xy, max_steps=40, 
                            foot_below_hands=True, y_margin=0):
     epsilon_cm = 1.0
     device = next(model.parameters()).device
@@ -428,7 +428,7 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30,
 
     arm_reach, leg_reach = get_reach_ranges(climber)
 
-    while step <= max_steps:
+    while step < max_steps:
         step += 1
         model.eval()
         with torch.no_grad():
@@ -521,7 +521,7 @@ def simulate_climb_to_goal(graph, model, goal_xy, max_steps=30,
 
 # 一次（一个step）只更新手或者脚
 def simulate_climb_to_goal_v2(
-    graph, model, goal_xy, max_steps=30,
+    graph, model, goal_xy, max_steps=40,
     foot_below_hands=True, y_margin=0,
     angle_threshold_deg=30.0,      # 超过该角度先动脚，否则动手
     foot_align_w=1.0,              # 动脚时：脚中心向手中心对齐的惩罚权重（越大越“居中”）
@@ -564,6 +564,11 @@ def simulate_climb_to_goal_v2(
             idxs.append(j)
         return idxs
 
+    # ---------- [SR-1] 像素→厘米的比例，用于把像素间距换成 cm ----------
+    def pixel_to_cm_scale():
+        return float(pixel_dist_to_cm(np.array([0., 0.]), np.array([1., 0.])))
+    PIXEL_TO_CM = pixel_to_cm_scale()
+
     coords = g.x[:, :2].cpu().numpy()
     goal_idx = np.argmin([pixel_dist_to_cm(coord, goal_xy) for coord in coords])
     step = 0
@@ -578,7 +583,18 @@ def simulate_climb_to_goal_v2(
     }
     arm_reach, leg_reach = get_reach_ranges(climber)
 
-    while step <= max_steps:
+    # ---------- [SR-2] Standing Reach（换算到厘米） ----------
+    H = float(climber["height"])
+    W = float(climber["arm_span"])
+    # 兼容：若数据是“米”，则转成“厘米”；若已是“厘米”（>10），保持不变
+    if H <= 10.0:   # 认为是“米”
+        H_m, W_m = H, W
+    else:           # 认为是“厘米”
+        H_m, W_m = H / 100.0, W / 100.0
+    standing_reach_cm = 100.0 * (1.27 * H_m + 0.30 * (W_m - H_m))
+    reach_guard_cm = 0.75 * standing_reach_cm  # 75% 阈值
+
+    while step < max_steps:
         step += 1
         model.eval()
         with torch.no_grad():
@@ -605,11 +621,26 @@ def simulate_climb_to_goal_v2(
         angle_deg = angle_to_vertical_deg(hand_c, foot_c)
 
         # 若还没有手或脚，先动手初始化（下一步才有角度可用）
-        move_what = None
         if angle_deg is None:
             move_what = "hands" if len(hand_idx) > 0 else ("feet" if len(foot_idx) > 0 else None)
         else:
             move_what = "feet" if angle_deg > angle_threshold_deg else "hands"
+
+        # ---------- [SR-3] 姿态保护：若“手脚中心的竖直间距”超过 StandingReach 的 75% ----------
+        # 超限时，覆盖 move_what：优先移动“离目标更远”的那一类（手/脚），把人拉回合理范围
+        if (hand_c is not None) and (foot_c is not None):
+            sep_pix = abs(hand_c[1] - foot_c[1])          # 竖直像素差
+            sep_cm  = sep_pix * PIXEL_TO_CM               # 换算到厘米
+            if sep_cm > reach_guard_cm:
+                # 两类中心到目标的距离（cm）
+                hand_goal_cm = pixel_dist_to_cm(hand_c, goal_xy)
+                foot_goal_cm = pixel_dist_to_cm(foot_c, goal_xy)
+                # 谁更远，谁移动；若某类没有候选，则移动另一类
+                if (hand_goal_cm >= foot_goal_cm and len(hand_idx) > 0) or len(foot_idx) == 0:
+                    move_what = "hands"
+                elif len(foot_idx) > 0:
+                    move_what = "feet"
+                # （其余选择逻辑仍沿用下面原来的规则）
 
         # ---- 选 / 动 手（加入“在脚上方优先”的偏好）----
         if move_what == "hands" and len(hand_idx) > 0:
@@ -677,7 +708,8 @@ def simulate_climb_to_goal_v2(
                         for b in range(a+1, len(cand)):
                             i, j = cand[a], cand[b]
                             feet_center_x = 0.5 * (coords[i][0] + coords[j][0])
-                            align_pen = abs(feet_center_x - cx)   # 水平对齐误差（像素）
+                            # （这里原来就乘了 PIXEL_TO_CM；保持一致）
+                            align_pen = abs(feet_center_x - cx) * PIXEL_TO_CM
                             score = foot_align_w * align_pen + foot_goal_w * (d_goal(i) + d_goal(j))
                             if (best is None) or (score < best[0]):
                                 best = (score, (i, j))
@@ -709,7 +741,7 @@ def simulate_climb_to_goal_v2(
     else:
         print(f"Climber cannot reach the goal in {max_steps} steps.")
 
-def calculate_the_step_to_goal(graph, model, goal_xy, max_steps=50, 
+def calculate_the_step_to_goal(graph, model, goal_xy, max_steps=40, 
                                foot_below_hands=True, y_margin=0):
     """
     无可视化：若模型在某一步预测目标点可达(非0标签)，返回该步数；若在 max_steps 内都不可达，返回 -1。
@@ -737,7 +769,7 @@ def calculate_the_step_to_goal(graph, model, goal_xy, max_steps=50,
 
     arm_reach, leg_reach = get_reach_ranges(climber)
 
-    while step <= max_steps:
+    while step < max_steps:
         step += 1
         model.eval()
         with torch.no_grad():
@@ -821,11 +853,11 @@ def calculate_the_step_to_goal(graph, model, goal_xy, max_steps=50,
     return -1
 
 def calculate_the_step_to_goal_v2(
-    graph, model, goal_xy, max_steps=50,
+    graph, model, goal_xy, max_steps=30,
     foot_below_hands=True, y_margin=0,
     angle_threshold_deg=30.0,      # 超过该角度先动脚，否则动手
-    foot_align_w=1.0,              # 动脚时：脚中心向手中心对齐的惩罚权重（越大越“居中”）
-    foot_goal_w=0.1,               # 动脚时：仍给一点“靠近目标”的偏好（0~0.3）
+    foot_align_w=1.0,              # 动脚：脚中心向手中心对齐的惩罚权重
+    foot_goal_w=0.1,               # 动脚：靠近目标的权重
     prefer_hands_above_feet=True,  
     y_above_margin_hand=0
 ):
@@ -848,7 +880,7 @@ def calculate_the_step_to_goal_v2(
         return hand_c, foot_c, hands_np, feet_np
 
     def angle_to_vertical_deg(hand_c, foot_c):
-        # 以脚中心为角点，连线与竖直线夹角（0°竖直，90°水平）
+        # 以脚中心为角点，与竖直线的夹角（0°竖直）
         if hand_c is None or foot_c is None:
             return None
         dx = hand_c[0] - foot_c[0]
@@ -862,9 +894,13 @@ def calculate_the_step_to_goal_v2(
             idxs.append(j)
         return idxs
 
+    # --- 像素→厘米比例 ---
+    def pixel_to_cm_scale():
+        return float(pixel_dist_to_cm(np.array([0., 0.]), np.array([1., 0.])))
+    PIXEL_TO_CM = pixel_to_cm_scale()
+
     coords = g.x[:, :2].cpu().numpy()
     goal_idx = np.argmin([pixel_dist_to_cm(coord, goal_xy) for coord in coords])
-    step = 0
 
     climber = {
         "height": g.climber[0][0].item(),
@@ -876,15 +912,25 @@ def calculate_the_step_to_goal_v2(
     }
     arm_reach, leg_reach = get_reach_ranges(climber)
 
-    while step <= max_steps:
-        step += 1
+    # --- Standing Reach 及 75% 阈值（cm）---
+    H = float(climber["height"])
+    W = float(climber["arm_span"])
+    if H <= 10.0:        # 认为是“米”
+        H_m, W_m = H, W
+    else:                # 认为是“厘米”
+        H_m, W_m = H / 100.0, W / 100.0
+    standing_reach_cm = 100.0 * (1.27 * H_m + 0.30 * (W_m - H_m))
+    reach_guard_cm = 0.75 * standing_reach_cm
+
+    # 迭代直到成功或超步数
+    for step in range(1, max_steps + 1):
         model.eval()
         with torch.no_grad():
             logits = model(g)
             coords = g.x[:, :2].cpu().numpy()
             preds = logits.argmax(dim=1).cpu().numpy()
 
-        # 成功：目标点被预测为可达(非0标签)
+        # 成功：目标点非 0
         if preds[goal_idx] != 0:
             return step
 
@@ -894,7 +940,7 @@ def calculate_the_step_to_goal_v2(
         if len(hand_idx) == 0 and len(foot_idx) == 0:
             return -1
 
-        # 根据角度决定动手还是动脚
+        # 决定动手还是动脚（直立角规则）
         hand_c, foot_c, hands_np, feet_np = centers_from_state(g)
         angle_deg = angle_to_vertical_deg(hand_c, foot_c)
         if angle_deg is None:
@@ -902,7 +948,18 @@ def calculate_the_step_to_goal_v2(
         else:
             move_what = "feet" if angle_deg > angle_threshold_deg else "hands"
 
-        # ---- 动手（带“手在脚上方优先”）----
+        # 姿态保护：若手脚竖直间距 > StandingReach 的 75%，优先移动“离目标更远”的那一类
+        if (hand_c is not None) and (foot_c is not None):
+            sep_cm = abs(hand_c[1] - foot_c[1]) * PIXEL_TO_CM
+            if sep_cm > reach_guard_cm:
+                hand_goal_cm = pixel_dist_to_cm(hand_c, goal_xy)
+                foot_goal_cm = pixel_dist_to_cm(foot_c, goal_xy)
+                if (hand_goal_cm >= foot_goal_cm and len(hand_idx) > 0) or len(foot_idx) == 0:
+                    move_what = "hands"
+                elif len(foot_idx) > 0:
+                    move_what = "feet"
+
+        # ---- 动手（脚上方优先）----
         if move_what == "hands" and len(hand_idx) > 0:
             hand_candidates = list(hand_idx)
             if (prefer_hands_above_feet and feet_np.size > 0):
@@ -934,7 +991,7 @@ def calculate_the_step_to_goal_v2(
             if len(selected_hands) > 0:
                 g.hands = torch.tensor(selected_hands, dtype=torch.float, device=device)
 
-        # ---- 动脚（对齐手的中心）----
+        # ---- 动脚（朝手中心对齐）----
         elif move_what == "feet" and len(foot_idx) > 0:
             current_hand_indices = map_points_to_indices(hands_np, coords) if hands_np.size else []
             used_idxs = set(current_hand_indices)
@@ -964,7 +1021,7 @@ def calculate_the_step_to_goal_v2(
                         for b in range(a+1, len(cand)):
                             i, j = cand[a], cand[b]
                             feet_center_x = 0.5 * (coords[i][0] + coords[j][0])
-                            align_pen = abs(feet_center_x - cx)
+                            align_pen = abs(feet_center_x - cx) * PIXEL_TO_CM
                             score = foot_align_w * align_pen + foot_goal_w * (d_goal(i) + d_goal(j))
                             if (best is None) or (score < best[0]):
                                 best = (score, (i, j))
@@ -974,17 +1031,15 @@ def calculate_the_step_to_goal_v2(
             if len(selected_feet) > 0:
                 g.feet = torch.tensor(selected_feet, dtype=torch.float, device=device)
 
-        # ---- 重算节点特征 ----
+        # ---- 重算节点特征（与原逻辑一致）----
         hands = g.hands.cpu().numpy()
         feet  = g.feet.cpu().numpy()
         new_x = g.x.clone().cpu().numpy()
         for i, p in enumerate(coords):
             hand_dists = [pixel_dist_to_cm(p, h) for h in hands]
             foot_dists = [pixel_dist_to_cm(p, f) for f in feet]
-
             is_hand_point = int(min(hand_dists) <= epsilon_cm)
             is_foot_point = int(min(foot_dists) <= epsilon_cm)
-
             new_x[i, 2] = np.clip(np.mean(hand_dists) / arm_reach, 0.0, 3.0)
             new_x[i, 3] = np.clip(np.min(hand_dists)  / arm_reach, 0.0, 3.0)
             new_x[i, 4] = np.clip(np.mean(foot_dists) / leg_reach, 0.0, 3.0)
@@ -993,8 +1048,9 @@ def calculate_the_step_to_goal_v2(
             new_x[i, 7] = float(is_foot_point)
         g.x = torch.tensor(new_x, dtype=torch.float, device=device)
 
-    # 未在 max_steps 内到达
+    # 超过最大步数仍未到达
     return -1
+
 
 def plot_grouped_step_bars_counts(casual_steps, skilled_steps, elite_steps):
     def ok_steps(a):
