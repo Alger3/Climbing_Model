@@ -586,13 +586,8 @@ def simulate_climb_to_goal_v2(
     # ---------- [SR-2] Standing Reach（换算到厘米） ----------
     H = float(climber["height"])
     W = float(climber["arm_span"])
-    # 兼容：若数据是“米”，则转成“厘米”；若已是“厘米”（>10），保持不变
-    if H <= 10.0:   # 认为是“米”
-        H_m, W_m = H, W
-    else:           # 认为是“厘米”
-        H_m, W_m = H / 100.0, W / 100.0
-    standing_reach_cm = 100.0 * (1.27 * H_m + 0.30 * (W_m - H_m))
-    reach_guard_cm = 0.75 * standing_reach_cm  # 75% 阈值
+    standing_reach_cm = 55.581 + (0.121 * H) + (0.814 * W)
+    reach_guard_cm = 0.75 * standing_reach_cm
 
     while step < max_steps:
         step += 1
@@ -915,11 +910,7 @@ def calculate_the_step_to_goal_v2(
     # --- Standing Reach 及 75% 阈值（cm）---
     H = float(climber["height"])
     W = float(climber["arm_span"])
-    if H <= 10.0:        # 认为是“米”
-        H_m, W_m = H, W
-    else:                # 认为是“厘米”
-        H_m, W_m = H / 100.0, W / 100.0
-    standing_reach_cm = 100.0 * (1.27 * H_m + 0.30 * (W_m - H_m))
+    standing_reach_cm = 55.581 + (0.121 * H) + (0.814 * W)
     reach_guard_cm = 0.75 * standing_reach_cm
 
     # 迭代直到成功或超步数
