@@ -5,6 +5,7 @@ from torch_geometric.data import Data
 from route_parser import PIXEL_TO_CM
 import matplotlib.pyplot as plt
 import math
+from matplotlib.lines import Line2D
 
 # Calculate the reach range of hand and leg
 def get_reach_ranges(climber):
@@ -88,20 +89,25 @@ def sample_grap_points_by_radius(route, climber, max_trials=50, k=0.6):
 
     return None, None, None
 
-def plot_route_with_grab(route, hand_points, foot_points, center=None):
+def plot_route_with_grab(route, hand_points, foot_points, center=None, goal=None):
     xs = [p[0] for p in route]
     ys = [p[1] for p in route]
     plt.figure(figsize=(10, 10))
-    plt.scatter(xs, ys, c='gray', label='Holds')
+    plt.scatter(xs, ys,
+                s=80, c='0.7', marker='o', label='holds', zorder=1)
 
     if center is not None:
         plt.scatter(center[0], center[1], color='orange', marker='x', s=150, label='Center')
 
     for p in hand_points:
-        plt.scatter(p[0], p[1], color='green', s=120, label='Hand')
+        plt.scatter(p[0], p[1], s=150, facecolors='none', edgecolors='red', linewidths=2, marker='s', label='hand')
 
     for p in foot_points:
-        plt.scatter(p[0], p[1], color='blue', s=120, label='Foot')
+        plt.scatter(p[0], p[1], s=150, facecolors='none', edgecolors='purple', linewidths=2, marker='s', label='foot')
+        
+    if goal is not None:
+        gx, gy = goal
+        plt.scatter(gx, gy, s=200, facecolors='none', edgecolors='red', linewidths=3, marker='o', label='Goal')
 
     plt.gca().invert_yaxis()
     plt.grid(True)
@@ -109,11 +115,60 @@ def plot_route_with_grab(route, hand_points, foot_points, center=None):
     plt.xlabel("x (px)")
     plt.ylabel("y (px)")
     plt.title("Grab Position (Pixel)")
+
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='gray', label='holds',
+               markerfacecolor='0.7', markersize=8, linestyle='None'),
+        Line2D([0], [0], marker='s', color='red', label='hands',
+               markerfacecolor='none', markersize=10, linestyle='None', linewidth=2),
+        Line2D([0], [0], marker='s', color='purple', label='feet',
+               markerfacecolor='none', markersize=10, linestyle='None', linewidth=2),
+        Line2D([0], [0], marker='o', color='red', label='Goal',
+                   markerfacecolor='none', markeredgewidth=3, markersize=10)
+    ]
+    plt.legend(handles=legend_elements, loc='upper left', frameon=True)
+    
     plt.show()
 
 """
 Below functions are for the reachability model with features dataset
 """
+
+def compute_hold_stats(holds_features):
+    areas = np.array([max(1.0, hf.get("shape_area", 0.0) or 0.0) for hf in holds_features], dtype=float)
+    circs = np.array([hf.get("shape_circularity", 0.0) or 0.0 for hf in holds_features], dtype=float)
+    stats = {
+        "area_p30": np.percentile(areas, 30),
+        "area_p50": np.percentile(areas, 50),
+        "area_p60": np.percentile(areas, 60),
+        "area_p70": np.percentile(areas, 70),
+        "circ_med": float(np.median(circs)),
+        "circ_p40": np.percentile(circs, 40),
+        "circ_p60": np.percentile(circs, 60),
+    }
+    return stats
+
+def compute_hold_stats_v3(holds_features):
+    """对本条 route 计算 area/circularity 的分位数，用于自适应阈值"""
+    areas = np.array([h.get("shape_area", 0.0) for h in holds_features], dtype=float)
+    circs = np.array([h.get("shape_circularity", 0.0) for h in holds_features], dtype=float)
+
+    # 保护：NaN / 0 情况
+    areas = np.nan_to_num(areas, nan=0.0, posinf=0.0, neginf=0.0)
+    circs = np.nan_to_num(circs, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def qs(x):
+        return {
+            "q10": float(np.percentile(x, 10)),
+            "q20": float(np.percentile(x, 20)),
+            "q25": float(np.percentile(x, 25)),
+            "q30": float(np.percentile(x, 30)),
+            "q40": float(np.percentile(x, 40)),
+            "med": float(np.median(x)),
+        }
+
+    return {"area": qs(areas), "circ": qs(circs)}
+
 
 # Calculate whether climber can catch this hold
 def is_grabbable_by_climber(climber, hold_features, use_hand):
@@ -148,52 +203,76 @@ def is_grabbable_by_climber(climber, hold_features, use_hand):
 
     return (hold_features.get("shape_area") >= area_thresh) and (hold_features.get("shape_circularity") >= circ_thresh)
 
-BASE_LOG_AREA_HAND = 7.285095166950276
-BASE_LOG_AREA_FOOT = 8.0305395163207
-SCALE_LOG_AREA = 1.9669811876841052
-CLIP_LOG_AREA = (5.12751431669736, 10.256193714082718)
+def is_grabbable_by_climber_v2(climber, hold_features, use_hand, stats):
+    group = climber.get("group")
+    if group == "casual":
+        base_area = stats["area_p70"]
+        base_circ = stats["circ_med"] + 0.03
+    elif group == "skilled":
+        base_area = stats["area_p50"]
+        base_circ = stats["circ_med"]
+    else: # elite
+        base_area = stats["area_p30"]
+        base_circ = stats["circ_med"] - 0.03
 
-BASE_CIRC_HAND = 0.7503203596084896
-BASE_CIRC_FOOT = 0.8293995267947876
-SCALE_CIRC = 0.19719044756542792
-CLIP_CIRC = (0.4720785780627363, 0.9450321817290853)
+    if use_hand:
+        area_mult = 0.90
+        circ_add = -0.03
+    else:
+        area_mult = 1.05
+        circ_add = +0.02
 
-def is_grabbable_by_climber_v2(climber, hold_feat, use_hand: bool, 
-                               prob_threshold: float = 0.5):
+    weight   = float(climber.get("weight", 70.0))
+    strength = float(climber.get("strength", 5.0))
+    # 相对 70kg/5级，最多±30% 面积，圆度最多±0.08
+    area_adj_mult = np.clip(1.0 + 0.002*(weight-70.0) - 0.03*(strength-5.0), 0.8, 1.2)
+    circ_adj_add  = np.clip(0.0007*(weight-70.0) - 0.015*(strength-5.0), -0.05, 0.05)
 
-    if not isinstance(hold_feat, dict):
-        return False
-    area = hold_feat.get("shape_area", None)
-    circ = hold_feat.get("shape_circularity", None)
-    if area is None or circ is None:
-        return False
+    area_thresh = max(1.0, base_area * area_mult * area_adj_mult)
+    circ_thresh = float(np.clip(base_circ + circ_add + circ_adj_add, 0.55, 0.90))
 
-    log_area = float(np.log1p(area))
-    log_area = float(np.clip(log_area, *CLIP_LOG_AREA))
-    circ = float(np.clip(circ, *CLIP_CIRC))
+    # 4) 取当前点的形状
+    hold_area = float(hold_features.get("shape_area", 0.0) or 0.0)
+    hold_circ = float(hold_features.get("shape_circularity", 0.0) or 0.0)
 
-    base_log_area = BASE_LOG_AREA_HAND if use_hand else BASE_LOG_AREA_FOOT
-    base_circ = BASE_CIRC_HAND if use_hand else BASE_CIRC_FOOT
+    return (hold_area >= area_thresh) and (hold_circ >= circ_thresh)
 
-    strength = float(climber.get("strength", 90.0))
-    flexibility = float(climber.get("flexibility", 6.0))
+def is_grabbable_by_climber_v3(climber, hold_feat, use_hand, stats):
+    """
+    更宽松的形状判定：
+    - 用路线内分位数做自适应阈值（防止一刀切）
+    - 手的要求低于脚
+    - 强/弱体质做轻微调节
+    """
+    A = float(hold_feat.get("shape_area", 0.0))
+    C = float(hold_feat.get("shape_circularity", 0.0))
+    A = 0.0 if np.isnan(A) else A
+    C = 0.0 if np.isnan(C) else C
 
-    k_s_log_area = 0.010  
-    k_f_circ = 0.005   
+    # 基准阈值：先按分位数，再给一个硬下限，避免过低
+    if use_hand:
+        A_thr = max(stats["area"]["q25"], stats["area"]["med"] * 0.50, 150.0)
+        C_thr = max(stats["circ"]["q20"], 0.55)
+    else:
+        A_thr = max(stats["area"]["q40"], stats["area"]["med"] * 0.70, 220.0)
+        C_thr = max(stats["circ"]["q30"], 0.58)
 
-    adj_log_area = base_log_area - k_s_log_area * (strength - 90.0)
-    adj_circ = base_circ - k_f_circ * (flexibility - 6.0)
+    # 体质调节（力量强→更宽松；体重大→略放宽）
+    strength = float(climber.get("strength", 50.0))
+    weight   = float(climber.get("weight",   65.0))
+    # 把 strength 归一到大约 [-1, +1] 的影响范围
+    s_gain = (strength - 50.0) / 50.0
+    w_gain = (weight   - 65.0) / 65.0
 
-    alpha_circ = 1.2
+    # 面积阈值最多放宽/收紧 ~15%
+    A_thr *= (1.0 - 0.15 * s_gain + 0.05 * w_gain)
 
-    z = (log_area - adj_log_area) / max(SCALE_LOG_AREA, 1e-6) \
-        + alpha_circ * (circ - adj_circ) / max(SCALE_CIRC, 1e-6)
+    return (A >= A_thr) and (C >= C_thr)
 
-    prob = 1.0 / (1.0 + math.exp(-z))
-    return prob >= prob_threshold
 
 def get_reachability_features_label(route, climber, hand_points, foot_points, holds_features):
     hand_reach, foot_reach = get_reach_ranges(climber)
+    stats = compute_hold_stats(holds_features)
     
     labels = []
     for i, p in enumerate(route):
@@ -202,9 +281,10 @@ def get_reachability_features_label(route, climber, hand_points, foot_points, ho
         hand = any(pixel_dist_to_cm(p, h) <= hand_reach for h in hand_points)
         foot = any(pixel_dist_to_cm(p, f) <= foot_reach for f in foot_points)
 
-        # TODO: Change the function to version 2
-        hand_graspable = is_grabbable_by_climber_v2(climber, hold_feat, use_hand=True)
-        foot_graspable = is_grabbable_by_climber_v2(climber, hold_feat, use_hand=False)
+        hand_graspable = is_grabbable_by_climber_v2(climber, hold_feat, use_hand=True,  stats=stats)
+        foot_graspable = is_grabbable_by_climber_v2(climber, hold_feat, use_hand=False,  stats=stats)
+
+        # hand_graspable = is_grabbable_by_climber(climber, hold_feat, use_hand=False)
 
         hand_reach = hand and hand_graspable
         foot_reach = foot and foot_graspable
@@ -218,4 +298,59 @@ def get_reachability_features_label(route, climber, hand_points, foot_points, ho
         else:
             labels.append(0)  # cant reach
     return labels
-    
+
+from collections import Counter  
+def get_reachability_features_label_v3(route, climber, hand_points, foot_points, holds_features,
+                                       close_override=0.65, dbg=False):
+    """
+    - dist_ok: 到任一起始手/脚点的最小距离 <= reach
+    - shape_ok: 由 is_grabbable_by_climber_v3 判定
+    - 近距离豁免：若距离 < close_override*reach，则忽略形状直接通过
+      （默认 0.65；你可以试 0.6~0.7）
+    """
+    hand_R, foot_R = get_reach_ranges(climber)
+    stats = compute_hold_stats_v3(holds_features)
+
+    labels = []
+    diag = {k:0 for k in ["hand_dist","foot_dist","hand_shape","foot_shape","both","hand","foot","none"]}
+
+    for i, p in enumerate(route):
+        d_hand = min(pixel_dist_to_cm(p, h) for h in hand_points)
+        d_foot = min(pixel_dist_to_cm(p, f) for f in foot_points)
+        dist_ok_hand = (d_hand <= hand_R)
+        dist_ok_foot = (d_foot <= foot_R)
+
+        # 形状
+        hf = holds_features[i]
+        shape_ok_hand = is_grabbable_by_climber_v3(climber, hf, True,  stats)
+        shape_ok_foot = is_grabbable_by_climber_v3(climber, hf, False, stats)
+
+        # 近距离豁免
+        close_hand = (d_hand <= close_override * hand_R)
+        close_foot = (d_foot <= close_override * foot_R)
+
+        hand_ok = dist_ok_hand and (shape_ok_hand or close_hand)
+        foot_ok = dist_ok_foot and (shape_ok_foot or close_foot)
+
+        if hand_ok and foot_ok: lab = 3
+        elif hand_ok:           lab = 1
+        elif foot_ok:           lab = 2
+        else:                   lab = 0
+        labels.append(lab)
+
+        # 统计
+        diag["hand_dist"]  += int(dist_ok_hand)
+        diag["foot_dist"]  += int(dist_ok_foot)
+        diag["hand_shape"] += int(shape_ok_hand)
+        diag["foot_shape"] += int(shape_ok_foot)
+        diag["both"]       += int(lab == 3)
+        diag["hand"]       += int(lab == 1)
+        diag["foot"]       += int(lab == 2)
+        diag["none"]       += int(lab == 0)
+
+    if dbg:
+        print(f"hand_R={hand_R:.2f} cm, foot_R={foot_R:.2f} cm")
+        print("诊断统计:", diag)
+        print("最终标签分布:", Counter(labels))
+
+    return labels
