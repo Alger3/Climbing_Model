@@ -848,7 +848,7 @@ def calculate_the_step_to_goal(graph, model, goal_xy, max_steps=40,
     return -1
 
 def calculate_the_step_to_goal_v2(
-    graph, model, goal_xy, max_steps=30,
+    graph, model, goal_xy, max_steps=40,
     foot_below_hands=True, y_margin=0,
     angle_threshold_deg=30.0,      # 超过该角度先动脚，否则动手
     foot_align_w=1.0,              # 动脚：脚中心向手中心对齐的惩罚权重
